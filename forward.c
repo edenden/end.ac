@@ -16,6 +16,15 @@
 #ifdef SRV6_END_AC
 #include <linux/seg6.h>
 #include <pthread.h>
+
+static inline uint16_t forward_endac_check_inc(uint16_t old_check,
+	uint16_t old, uint16_t new);
+static inline int forward_endac_ip(struct iphdr *ip, uint8_t tos);
+static inline int forward_endac_ip6(struct ip6_hdr *ip6);
+static inline int forward_endac_srv6(struct ip6_hdr *ip6,
+	struct ipv6_sr_hdr *srv6);
+static inline void forward_endac_eth(struct ethhdr *eth,
+	void *dst, void *src, uint16_t proto);
 static int forward_srv6_inner(struct xdpd_thread *thread,
 	unsigned int port_index, struct xdp_packet *packet);
 static int forward_srv6_outer(struct xdpd_thread *thread,
@@ -95,7 +104,8 @@ void forward_process(struct xdpd_thread *thread, unsigned int port_index)
 		}
 
 		if(ret < 0){
-			xdp_slot_release(thread->buf, vec->packets[i].slot_index);
+			xdp_slot_release(thread->buf,
+				vec->packets[i].slot_index);
 			continue;
 		}
 
@@ -123,9 +133,6 @@ static inline int forward_endac_ip(struct iphdr *ip, uint8_t tos)
 {
 	uint32_t check;
 
-char temp[1024];
-inet_ntop(AF_INET, &ip->daddr, temp, sizeof(temp));
-printf("daddr = %s\n", temp);
 	if(unlikely(ip->ttl == 1))
 		goto drop;
 
@@ -233,7 +240,6 @@ printf("forward_srv6_inner\n");
 	sr_cache = &sr_table->cache[sr_arg];
 	pthread_rwlock_rdlock(&sr_cache->lock);
 	if(!sr_cache->size){
-printf("INNER: sr_cache = %p, sr_cache->size = %d, key = %d\n", sr_cache, sr_cache->size, sr_arg);
 		pthread_rwlock_unlock(&sr_cache->lock);
 		goto packet_drop;
 	}
@@ -313,7 +319,6 @@ printf("forward_srv6_outer\n");
 
 	sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
 	sr_cache = &sr_table->cache[sr_arg];
-printf("OUTER: sr_cache = %p\n", sr_cache);
 
 	if(len < sizeof(struct ipv6_sr_hdr))
 		goto packet_drop;
@@ -327,8 +332,6 @@ printf("OUTER: sr_cache = %p\n", sr_cache);
 	err = forward_endac_srv6(ip6, srv6);
 	if(err < 0)
 		goto packet_drop;
-
-printf("srv6: nexthdr = %d, segleft = %d, hdrlen = %d\n", srv6->nexthdr, srv6->segments_left, srv6->hdrlen);
 
 	cache_len = sizeof(struct ip6_hdr)
 		+ sizeof(struct ipv6_sr_hdr) + (srv6->hdrlen * 8);

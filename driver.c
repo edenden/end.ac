@@ -21,9 +21,12 @@
 #include "lib.h"
 #include "driver.h"
 
-inline uint64_t xdp_slot_addr_rel(struct xdp_buf *buf, unsigned int slot_index);
-inline void *xdp_slot_addr_virt(struct xdp_buf *buf, unsigned int slot_index);
-inline unsigned int xdp_slot_index(struct xdp_buf *buf, uint64_t addr_rel);
+static inline uint64_t xdp_slot_addr_rel(struct xdp_buf *buf,
+	unsigned int slot_index);
+static inline void *xdp_slot_addr_virt(struct xdp_buf *buf,
+	unsigned int slot_index);
+static inline unsigned int xdp_slot_index(struct xdp_buf *buf,
+	uint64_t addr_rel);
 
 void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf)
@@ -42,7 +45,8 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	total_fill = 0;
 
 	while(1){
-		if(unlikely(((next_to_use + 1) & (XDPD_RX_DESC - 1)) == *fq_ring->consumer))
+		if(unlikely(((next_to_use + 1) & (XDPD_RX_DESC - 1))
+			== *fq_ring->consumer))
 			break;
 
 		slot_index = xdp_slot_assign(buf, plane, port_idx);
@@ -87,17 +91,20 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	i = 0;
 
 	while(likely(i++ < vec->num)){
-		if(unlikely(((next_to_use + 1) & (XDPD_TX_DESC - 1)) == *tx_ring->consumer)){
+		if(unlikely(((next_to_use + 1) & (XDPD_TX_DESC - 1))
+			== *tx_ring->consumer)){
 			port->count_tx_xmit_failed++;
-			xdp_slot_release(buf, vec->packets[total_fill].slot_index);
+			xdp_slot_release(buf,
+				vec->packets[total_fill].slot_index);
 			continue;
 		}
 
 		desc = &((struct xdp_desc *)tx_ring->descs)[next_to_use];
-		desc->addr = xdp_slot_addr_rel(buf, vec->packets[total_fill].slot_index);
+		desc->addr = xdp_slot_addr_rel(buf,
+			vec->packets[total_fill].slot_index);
 		desc->len = vec->packets[total_fill].slot_size;
 
-		xdp_print("Tx: packet sending addr = %p size = %d port_idx = %d\n",
+		xdp_print("Tx: addr = %p size = %d port_idx = %d\n",
 			(void *)desc->addr, desc->len, port_idx);
 
 		next_to_use++;
@@ -146,7 +153,8 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 		desc = &((struct xdp_desc *)rx_ring->descs)[next_to_clean];
 		slot_index = xdp_slot_index(buf, desc->addr);
 
-		vec->packets[total_pull].slot_buf = xdp_slot_addr_virt(buf, slot_index);
+		vec->packets[total_pull].slot_buf =
+			xdp_slot_addr_virt(buf, slot_index);
 		vec->packets[total_pull].slot_size = desc->len;
 		vec->packets[total_pull].slot_index = slot_index;
 
@@ -247,17 +255,20 @@ void xdp_slot_release(struct xdp_buf *buf,
 	return;
 }
 
-inline uint64_t xdp_slot_addr_rel(struct xdp_buf *buf, unsigned int slot_index)
+static inline uint64_t xdp_slot_addr_rel(struct xdp_buf *buf,
+	unsigned int slot_index)
 {
 	return (buf->slot_size * slot_index);
 }
 
-inline void *xdp_slot_addr_virt(struct xdp_buf *buf, unsigned int slot_index)
+static inline void *xdp_slot_addr_virt(struct xdp_buf *buf,
+	unsigned int slot_index)
 {
 	return buf->addr + (buf->slot_size * slot_index);
 }
 
-inline unsigned int xdp_slot_index(struct xdp_buf *buf, uint64_t addr_rel)
+static inline unsigned int xdp_slot_index(struct xdp_buf *buf,
+	uint64_t addr_rel)
 {
 	return (addr_rel / buf->slot_size);
 }

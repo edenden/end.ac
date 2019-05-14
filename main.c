@@ -56,8 +56,8 @@ static void usage()
 	printf("  -b [n] : Number of packet buffer per port(default=8192)\n");
 	printf("  -h : Show this help\n");
 #ifdef SRV6_END_AC
-	printf("  -s : [v6in-ifidx],[v4out-ifidx],[v4in-ifidx],[v6out-ifidx],[v4out-dmac],[v6out-dmac],[sid],[sidlen],[argoffset]\n");
-	printf("  -s : 0,1,2,3,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb:bb,fd00::,64,80\n");
+	printf("  -s [v6in-ifidx],[v4out-ifidx],[v4in-ifidx],[v6out-ifidx],[v4out-dmac],[v6out-dmac],[sid],[sidlen],[argoffset]\n");
+	printf("  -s 0,1,2,3,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb:bb,fd00::,64,80\n");
 #endif
 	printf("\n");
 	return;
