@@ -1,5 +1,5 @@
 # end.ac
-SRv6 function of multi-tenant proxy by SRH cache over AF_XDP
+SRv6 function of multi-tenant proxy by SRH caching over AF_XDP
 
 ## Usage
 See -h option for latest information.
