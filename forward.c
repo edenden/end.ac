@@ -61,6 +61,7 @@ void forward_process(struct xdpd_thread *thread, unsigned int port_index)
 	struct xdp_vec *vec, *vec_target;
 	struct ethhdr *eth;
 	int i, ret;
+static uint64_t counter = 0;
 
 	port = &thread->plane->ports[port_index];
 	vec = &port->vec;
@@ -90,6 +91,7 @@ void forward_process(struct xdpd_thread *thread, unsigned int port_index)
 #endif
 			break;
 		case ETH_P_IPV6:
+printf("%lu packets\n", ++counter);
 #ifdef SRV6_END_AC
 			ret = forward_srv6_outer(thread,
 				port_index, &vec->packets[i]);

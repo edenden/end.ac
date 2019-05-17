@@ -294,7 +294,8 @@ static void xdp_release_ring(struct xdp_ring *ring)
 	return;
 }
 
-struct xdp_buf *xdp_alloc_buf(unsigned int slot_size, unsigned int buf_count)
+struct xdp_buf *xdp_alloc_buf(unsigned int slot_size, unsigned int num_devs,
+	unsigned int num_devbuf)
 {
 	struct xdp_buf *buf;
 	size_t size_buf_align;
@@ -309,7 +310,8 @@ struct xdp_buf *xdp_alloc_buf(unsigned int slot_size, unsigned int buf_count)
 	 * DPDK does so in rte_mempool.c/optimize_object_size().
 	 */
 	buf->slot_size = slot_size;
-	buf->count = buf_count;
+	buf->count = num_devs * num_devbuf;
+	buf->count_devbuf = num_devbuf;
 	size_buf_align = ALIGN(buf->slot_size * buf->count, getpagesize());
 
 	err = posix_memalign(&buf->addr, getpagesize(), size_buf_align);

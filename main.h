@@ -77,6 +77,7 @@ struct xdp_buf {
 	void			*addr;
 	unsigned int		slot_size;
 	unsigned int		count;
+	unsigned int		count_devbuf;
 	unsigned int		*slots;
 };
 

@@ -210,7 +210,7 @@ static int xdpd_thread_create(struct xdpd *xdpd,
 	thread->ptid		= pthread_self();
 
 	thread->buf = xdp_alloc_buf(xdpd->buf_size,
-		xdpd->num_devices * xdpd->buf_count);
+		xdpd->num_devices, xdpd->buf_count);
 	if(!thread->buf){
 		xdpd_log(LOG_ERR,
 			"failed to xdp_alloc_buf, idx = %d", thread->id);

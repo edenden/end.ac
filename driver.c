@@ -1,5 +1,3 @@
-#include <unistd.h>
-#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,19 +32,19 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_ring *fq_ring;
 	unsigned int total_fill;
-	uint16_t next_to_use;
+	uint16_t next_to_use, desc_idx;
 	uint64_t *desc;
 	int slot_index;
 
 	port = &plane->ports[port_idx];
 	fq_ring = &port->fq_ring;
 
-	next_to_use = *fq_ring->producer;
+	desc_idx = *fq_ring->producer;
 	total_fill = 0;
 
 	while(1){
-		if(unlikely(((next_to_use + 1) & (XDPD_RX_DESC - 1))
-			== *fq_ring->consumer))
+		if(((desc_idx + 1) & (XDPD_RX_DESC - 1))
+			== (*fq_ring->consumer & (XDPD_RX_DESC - 1)))
 			break;
 
 		slot_index = xdp_slot_assign(buf, plane, port_idx);
@@ -55,17 +53,17 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 			break;
 		}
 
+		next_to_use = desc_idx & (XDPD_RX_DESC - 1);
 		desc = &((uint64_t *)fq_ring->descs)[next_to_use];
 		*desc = xdp_slot_addr_rel(buf, slot_index);
 
-		next_to_use++;
-		next_to_use &= (XDPD_RX_DESC - 1);
+		desc_idx++;
 		total_fill++;
 	}
 
-	if(likely(total_fill)){
+	if(total_fill){
 		wmb();
-		*fq_ring->producer = next_to_use;
+		*fq_ring->producer = desc_idx;
 	}
 
 	return;
@@ -77,7 +75,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_vec *vec;
 	struct xdp_ring *tx_ring;
-	uint16_t next_to_use;
+	uint16_t next_to_use, desc_idx;
 	unsigned int total_fill;
 	struct xdp_desc *desc;
 	int i, err;
@@ -86,19 +84,20 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	vec = &port->vec;
 	tx_ring = &port->tx_ring;
 
-	next_to_use = *tx_ring->producer;
+	desc_idx = *tx_ring->producer;
 	total_fill = 0;
 	i = 0;
 
-	while(likely(i++ < vec->num)){
-		if(unlikely(((next_to_use + 1) & (XDPD_TX_DESC - 1))
-			== *tx_ring->consumer)){
+	while(i++ < vec->num){
+		if(((desc_idx + 1) & (XDPD_TX_DESC - 1))
+			== (*tx_ring->consumer & (XDPD_TX_DESC - 1))){
 			port->count_tx_xmit_failed++;
 			xdp_slot_release(buf,
 				vec->packets[total_fill].slot_index);
 			continue;
 		}
 
+		next_to_use = desc_idx & (XDPD_TX_DESC - 1);
 		desc = &((struct xdp_desc *)tx_ring->descs)[next_to_use];
 		desc->addr = xdp_slot_addr_rel(buf,
 			vec->packets[total_fill].slot_index);
@@ -107,14 +106,13 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 		xdp_print("Tx: addr = %p size = %d port_idx = %d\n",
 			(void *)desc->addr, desc->len, port_idx);
 
-		next_to_use++;
-		next_to_use &= (XDPD_TX_DESC - 1);
+		desc_idx++;
 		total_fill++;
 	}
 
-	if(likely(total_fill)){
+	if(total_fill){
 		wmb();
-		*tx_ring->producer = next_to_use;
+		*tx_ring->producer = desc_idx;
 
 		err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
 		if (err < 0){
@@ -133,7 +131,7 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_vec *vec;
 	struct xdp_ring *rx_ring;
-	uint16_t next_to_clean;
+	uint16_t next_to_clean, desc_idx;
 	struct xdp_desc *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;
@@ -142,14 +140,15 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	vec = &port->vec;
 	rx_ring = &port->rx_ring;
 
-	next_to_clean = *rx_ring->consumer;
+	desc_idx = *rx_ring->consumer;
 	total_pull = 0;
 
-	while(likely(total_pull < XDPD_RX_BUDGET)){
-		if(unlikely(next_to_clean == *rx_ring->producer)){
+	while(total_pull < XDPD_RX_BUDGET){
+		if(desc_idx == *rx_ring->producer){
 			break;
 		}
 
+		next_to_clean = desc_idx & (XDPD_RX_DESC - 1);
 		desc = &((struct xdp_desc *)rx_ring->descs)[next_to_clean];
 		slot_index = xdp_slot_index(buf, desc->addr);
 
@@ -158,17 +157,17 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 		vec->packets[total_pull].slot_size = desc->len;
 		vec->packets[total_pull].slot_index = slot_index;
 
-		xdp_print("Rx: packet received size = %d\n",
+		xdp_print("Rx: packet received slot = %d, size = %d\n",
+			vec->packets[total_pull].slot_index,
 			vec->packets[total_pull].slot_size);
 
-		next_to_clean++;
-		next_to_clean &= (XDPD_RX_DESC - 1);
+		desc_idx++;
 		total_pull++;
 	}
 
-	if(likely(total_pull)){
+	if(total_pull){
 		wmb();
-		*rx_ring->consumer = next_to_clean;
+		*rx_ring->consumer = desc_idx;
 	}
 
 	port->count_rx_clean_total += total_pull;
@@ -181,7 +180,7 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 {
 	struct xdp_port *port;
 	struct xdp_ring *cq_ring;
-	uint16_t next_to_clean;
+	uint16_t next_to_clean, desc_idx;
 	uint64_t *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;
@@ -189,28 +188,30 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	port = &plane->ports[port_idx];
 	cq_ring = &port->cq_ring;
 
-	next_to_clean = *cq_ring->consumer;
+	desc_idx = *cq_ring->consumer;
 	total_pull = 0;
 
-	while(likely(total_pull < XDPD_TX_BUDGET)){
-		if(unlikely(next_to_clean == *cq_ring->producer)){
+	while(total_pull < XDPD_TX_BUDGET){
+printf("Tx pull desc_idx = %d, producer = %d\n", desc_idx, *cq_ring->producer);
+		if(desc_idx == *cq_ring->producer){
 			break;
 		}
 
-		/* Release unused buffer */
+		next_to_clean = desc_idx & (XDPD_TX_DESC - 1);
 		desc = &((uint64_t *)cq_ring->descs)[next_to_clean];
 		slot_index = xdp_slot_index(buf, *desc);
 
 		xdp_slot_release(buf, slot_index);
 
-		next_to_clean++;
-		next_to_clean &= (XDPD_TX_DESC - 1);
+		desc_idx++;
 		total_pull++;
 	}
 
-	if(likely(total_pull)){
+printf("Tx-pull total_pull = %d\n", total_pull);
+
+	if(total_pull){
 		wmb();
-		*cq_ring->consumer = next_to_clean;
+		*cq_ring->consumer = desc_idx;
 	}
 
 	port->count_tx_clean_total += total_pull;
@@ -226,14 +227,14 @@ int xdp_slot_assign(struct xdp_buf *buf,
 	port = &plane->ports[port_idx];
 	slot_next = port->rx_slot_next;
 
-	for(i = 0; i < buf->count; i++){
+	for(i = 0; i < buf->count_devbuf; i++){
 		slot_index = port->rx_slot_offset + slot_next;
 		if(!(buf->slots[slot_index] & XDP_SLOT_INFLIGHT)){
 			goto out;
 		}
 
 		slot_next++;
-		if(slot_next == buf->count)
+		if(slot_next == buf->count_devbuf)
 			slot_next = 0;
 	}
 
@@ -241,7 +242,7 @@ int xdp_slot_assign(struct xdp_buf *buf,
 
 out:
 	port->rx_slot_next = slot_next + 1;
-	if(port->rx_slot_next == buf->count)
+	if(port->rx_slot_next == buf->count_devbuf)
 		port->rx_slot_next = 0;
 
 	buf->slots[slot_index] |= XDP_SLOT_INFLIGHT;
