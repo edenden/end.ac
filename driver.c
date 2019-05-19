@@ -32,7 +32,7 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_ring *fq_ring;
 	unsigned int total_fill;
-	uint16_t next_to_use, desc_idx;
+	uint32_t next_to_use, desc_idx;
 	uint64_t *desc;
 	int slot_index;
 
@@ -75,7 +75,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_vec *vec;
 	struct xdp_ring *tx_ring;
-	uint16_t next_to_use, desc_idx;
+	uint32_t next_to_use, desc_idx;
 	unsigned int total_fill;
 	struct xdp_desc *desc;
 	int i, err;
@@ -131,7 +131,7 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_vec *vec;
 	struct xdp_ring *rx_ring;
-	uint16_t next_to_clean, desc_idx;
+	uint32_t next_to_clean, desc_idx;
 	struct xdp_desc *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;
@@ -180,7 +180,7 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 {
 	struct xdp_port *port;
 	struct xdp_ring *cq_ring;
-	uint16_t next_to_clean, desc_idx;
+	uint32_t next_to_clean, desc_idx;
 	uint64_t *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;

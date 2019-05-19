@@ -65,8 +65,8 @@
 
 struct xdp_ring {
 	void			*addr;
-	unsigned int		*producer;
-	unsigned int		*consumer;
+	uint32_t		*producer;
+	uint32_t		*consumer;
 	void			*descs;
 	unsigned int		size;
 };
