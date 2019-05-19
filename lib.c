@@ -21,8 +21,9 @@
 #include "main.h"
 #include "lib.h"
 
-static int xdp_alloc_rings(struct xdp_port *port, struct xdp_buf *buf);
-static void xdp_release_rings(struct xdp_port *port);
+static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
+	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx);
+static void xdp_release_port(struct xdp_port *port);
 static int xdp_alloc_ring(int fd, struct xdp_ring *ring,
 	unsigned long size_desc, int num_desc, off_t mmap_offset, int sock_flag,
 	struct xdp_ring_offset *offset);
@@ -35,11 +36,8 @@ static int xdp_configure_srv6(struct xdp_port *port);
 struct xdp_plane *xdp_plane_alloc(struct xdp_dev **devs, int num_devs,
 	struct xdp_buf *buf, unsigned int thread_id, unsigned int core_id)
 {
-	struct xdp_dev *dev;
 	struct xdp_plane *plane;
-	struct xdp_port *port;
-	int dev_done, i, err;
-	struct sockaddr_xdp sxdp;
+	int port_done, i, err;
 
 	plane = malloc(sizeof(struct xdp_plane));
 	if(!plane)
@@ -50,71 +48,34 @@ struct xdp_plane *xdp_plane_alloc(struct xdp_dev **devs, int num_devs,
 	if(!plane->ports)
 		goto err_alloc_ports;
 
-	for(i = 0, dev_done = 0; i < num_devs; i++, dev_done++){
-		dev = devs[i];
-		port = &plane->ports[i];
-
-		port->dev_idx		= i;
-		port->xfd		= dev->xfds[thread_id];
-		port->num_qps		= dev->num_qps;
-		port->mtu_frame		= dev->mtu_frame;
-		memcpy(port->mac_addr, dev->mac_addr, ETH_ALEN);
-
-		port->rx_slot_next	= 0;
-		port->rx_slot_offset	= port->dev_idx * (buf->count / num_devs);
-		port->count_rx_alloc_failed	= 0;
-		port->count_rx_clean_total	= 0;
-		port->count_tx_xmit_failed	= 0;
-		port->count_tx_clean_total	= 0;
-		port->vec.num = 0;
+	for(i = 0, port_done = 0; i < num_devs; i++, port_done++){
+		err = xdp_alloc_port(devs, plane, buf, thread_id, i);
+		if(err < 0)
+			goto err_alloc_port;
 
 #ifdef SRV6_END_AC
-		err = xdp_configure_srv6(port);
+		err = xdp_configure_srv6(&plane->ports[i]);
 		if(err < 0){
 			printf("Invalid SID port assign\n");
 			goto err_configure_srv6;
 		}
 #endif
 
-		err = xdp_alloc_rings(port, buf);
-		if(err < 0)
-			goto err_alloc_rings;
-
-		sxdp.sxdp_family = PF_XDP;
-		sxdp.sxdp_ifindex = dev->ifindex;
-		sxdp.sxdp_queue_id = thread_id;
-		/* XXX: OPTION-ize XDP mode */
-//		sxdp.sxdp_flags = XDP_ZEROCOPY;
-		sxdp.sxdp_flags = XDP_COPY;
-
-		err = bind(port->xfd, (struct sockaddr *)&sxdp, sizeof(sxdp));
-		if(err < 0)
-			goto err_bind;
-
-		err = bpf_map_update_elem(dev->xsks_map,
-			&thread_id, &port->xfd, 0);
-		if(err)
-			goto err_map_update;
-		xdp_print("bpf_map_update_elem: dev_id = %d, thread_id(queue id) = %d, xfd(xsk id) = %d\n",
-			port->dev_idx, thread_id, port->xfd);
-
 		continue;
 
-err_map_update:
-err_bind:
-		xdp_release_rings(port);
-err_alloc_rings:
 #ifdef SRV6_END_AC
 err_configure_srv6:
 #endif
+		xdp_release_port(&plane->ports[i]);
+err_alloc_port:
 		goto err_port;
 	}
 
 	return plane;
 
 err_port:
-	for(i = 0; i < dev_done; i++){
-		xdp_release_rings(&plane->ports[i]);
+	for(i = 0; i < port_done; i++){
+		xdp_release_port(&plane->ports[i]);
 	}
 	free(plane->ports);
 err_alloc_ports:
@@ -123,11 +84,26 @@ err_alloc_plane:
 	return NULL;
 }
 
+void xdp_plane_release(struct xdp_plane *plane)
+{
+	int i;
+
+	for(i = 0; i < plane->num_ports; i++){
+		xdp_release_port(&plane->ports[i]);
+	}
+	free(plane->ports);
+	free(plane);
+
+	return;
+}
+
 #ifdef SRV6_END_AC
 static int xdp_configure_srv6(struct xdp_port *port)
 {
 	struct sr_cache_table *cache_table;
 	int i, j;
+
+	port->mode = 0;
 
 	for(i = 0; i < 2; i++){
 		cache_table = &sr_cache_table[i];
@@ -166,28 +142,42 @@ err_configure_srv6:
 }
 #endif
 
-void xdp_plane_release(struct xdp_plane *plane)
+static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
+	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx)
 {
-	int i;
-
-	for(i = 0; i < plane->num_ports; i++){
-		xdp_release_rings(&plane->ports[i]);
-	}
-	free(plane->ports);
-	free(plane);
-
-	return;
-}
-
-static int xdp_alloc_rings(struct xdp_port *port, struct xdp_buf *buf)
-{
+	struct xdp_dev *dev;
+	struct xdp_port *port;
 	struct xdp_umem_reg mr;
 	struct xdp_mmap_offsets off;
 	socklen_t optlen;
+	struct sockaddr_xdp sxdp;
 	int err;
 
+	dev = devs[dev_idx];
+	port = &plane->ports[dev_idx];
+
+	port->dev_idx			= dev_idx;
+	port->num_qps			= dev->num_qps;
+	port->mtu_frame			= dev->mtu_frame;
+	memcpy(port->mac_addr, dev->mac_addr, ETH_ALEN);
+
+	port->rx_slot_next		= 0;
+	port->rx_slot_offset		=
+		port->dev_idx * buf->slot_count_devbuf;
+
+	port->count_rx_alloc_failed	= 0;
+	port->count_rx_clean_total	= 0;
+	port->count_tx_xmit_failed	= 0;
+	port->count_tx_clean_total	= 0;
+	port->vec.num = 0;
+
+	port->xfd = socket(AF_XDP, SOCK_RAW, 0);
+	if(port->xfd < 0)
+		goto err_open_socket;
+
 	mr.addr		= (uint64_t)buf->addr;
-	mr.len		= ALIGN(buf->slot_size * buf->count, getpagesize());
+	mr.len		= ALIGN(buf->slot_size * buf->slot_count,
+				getpagesize());
 	mr.chunk_size	= buf->slot_size;
 	mr.headroom	= 0;
 
@@ -233,8 +223,31 @@ static int xdp_alloc_rings(struct xdp_port *port, struct xdp_buf *buf)
 	if(err < 0)
 		goto err_tx_alloc;
 
+	sxdp.sxdp_family = PF_XDP;
+	sxdp.sxdp_ifindex = dev->ifindex;
+	sxdp.sxdp_queue_id = thread_id;
+
+	/* XXX: OPTION-ize XDP mode */
+//	sxdp.sxdp_flags = XDP_ZEROCOPY;
+	sxdp.sxdp_flags = XDP_COPY;
+
+	err = bind(port->xfd, (struct sockaddr *)&sxdp, sizeof(sxdp));
+	if(err < 0)
+		goto err_bind;
+
+	err = bpf_map_update_elem(dev->xsks_map,
+		&thread_id, &port->xfd, 0);
+	if(err)
+		goto err_map_update;
+
+	xdp_print("bpf_map_update_elem: dev_id = %d, thread_id(queue id) = %d, xfd(xsk id) = %d\n",
+		port->dev_idx, thread_id, port->xfd);
+
 	return 0;
 
+err_map_update:
+err_bind:
+	xdp_release_ring(&port->tx_ring);
 err_tx_alloc:
 	xdp_release_ring(&port->rx_ring);
 err_rx_alloc:
@@ -244,15 +257,18 @@ err_cq_alloc:
 err_fq_alloc:
 err_get_offset:
 err_umem_reg:
+	close(port->xfd);
+err_open_socket:
 	return -1;
 }
 
-static void xdp_release_rings(struct xdp_port *port)
+static void xdp_release_port(struct xdp_port *port)
 {
 	xdp_release_ring(&port->tx_ring);
 	xdp_release_ring(&port->rx_ring);
 	xdp_release_ring(&port->cq_ring);
 	xdp_release_ring(&port->fq_ring);
+	close(port->xfd);
 
 	return;
 }
@@ -310,19 +326,25 @@ struct xdp_buf *xdp_alloc_buf(unsigned int slot_size, unsigned int num_devs,
 	 * DPDK does so in rte_mempool.c/optimize_object_size().
 	 */
 	buf->slot_size = slot_size;
-	buf->count = num_devs * num_devbuf;
-	buf->count_devbuf = num_devbuf;
-	size_buf_align = ALIGN(buf->slot_size * buf->count, getpagesize());
+	buf->slot_count_devbuf = 1;
+	while(buf->slot_count_devbuf < num_devbuf){
+		buf->slot_count_devbuf <<= 1;
+	}
+	buf->slot_mask_devbuf = buf->slot_count_devbuf - 1;
+	buf->slot_count = num_devs * buf->slot_count_devbuf;
+
+	size_buf_align = ALIGN(buf->slot_size * buf->slot_count,
+		getpagesize());
 
 	err = posix_memalign(&buf->addr, getpagesize(), size_buf_align);
 	if(err < 0)
 		goto err_mem_alloc;
 
-	buf->slots = malloc(sizeof(int) * buf->count);
+	buf->slots = malloc(sizeof(int) * buf->slot_count);
 	if(!buf->slots)
 		goto err_alloc_slots;
 
-	for(i = 0; i < buf->count; i++){
+	for(i = 0; i < buf->slot_count; i++){
 		buf->slots[i] = 0;
 	}
 
@@ -344,50 +366,8 @@ void xdp_release_buf(struct xdp_buf *buf)
 	return;
 }
 
-int xdp_up(struct xdp_dev *dev,
+struct xdp_dev *xdp_open(const char *name,
 	unsigned int num_qps, unsigned int buf_size, unsigned int mtu_frame)
-{
-	int i, qp_done;
-
-	dev->buf_size = buf_size;
-	dev->mtu_frame = mtu_frame;
-	dev->num_qps = num_qps;
-
-	dev->xfds = malloc(sizeof(int) * dev->num_qps);
-	if(!dev->xfds)
-		goto err_alloc_fds;
-
-	for(i = 0, qp_done = 0; i < dev->num_qps; i++, qp_done++){
-		dev->xfds[i] = socket(AF_XDP, SOCK_RAW, 0);
-		if(dev->xfds[i] < 0)
-			goto err_open_socket;
-		continue;
-
-err_open_socket:
-		goto err_qp;
-	}
-
-	return 0;
-
-err_qp:
-	for(i = 0; i < qp_done; i++){
-		close(dev->xfds[i]);
-	}
-err_alloc_fds:
-	return -1;
-}
-
-void xdp_down(struct xdp_dev *dev)
-{
-	int i;
-
-	for(i = 0; i < dev->num_qps; i++){
-		close(dev->xfds[i]);
-	}
-	return;
-}
-
-struct xdp_dev *xdp_open(const char *name)
 {
 	struct xdp_dev *dev;
 	struct bpf_object *obj;
@@ -402,7 +382,11 @@ struct xdp_dev *xdp_open(const char *name)
 	dev = malloc(sizeof(struct xdp_dev));
 	if (!dev)
 		goto err_alloc_dev;
+
 	strncpy(dev->name, name, sizeof(dev->name));
+	dev->buf_size = buf_size;
+	dev->mtu_frame = mtu_frame;
+	dev->num_qps = num_qps;
 
 	fd = socket(AF_INET, SOCK_DGRAM, 0);
 	if(fd < 0)

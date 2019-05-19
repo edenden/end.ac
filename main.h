@@ -76,14 +76,14 @@ struct xdp_ring {
 struct xdp_buf {
 	void			*addr;
 	unsigned int		slot_size;
-	unsigned int		count;
-	unsigned int		count_devbuf;
+	unsigned int		slot_count;
+	unsigned int		slot_count_devbuf;
+	unsigned int		slot_mask_devbuf;
 	unsigned int		*slots;
 };
 
 struct xdp_dev {
 	int			xsks_map;
-	int			*xfds;
 
 	unsigned int		num_qps;
 	unsigned int		buf_size;
@@ -146,9 +146,9 @@ struct xdp_port {
 	unsigned int		mtu_frame;
 	char			mac_addr[ETH_ALEN];
 
-	/* original parameters */
 	unsigned int		rx_slot_next;
 	unsigned int		rx_slot_offset;
+
 	unsigned long		count_rx_alloc_failed;
 	unsigned long		count_rx_clean_total;
 	unsigned long		count_tx_xmit_failed;

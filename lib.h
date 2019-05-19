@@ -9,10 +9,7 @@ void xdp_plane_release(struct xdp_plane *plane);
 struct xdp_buf *xdp_alloc_buf(unsigned int slot_size, unsigned int num_devs,
 	unsigned int num_devbuf);
 void xdp_release_buf(struct xdp_buf *buf);
-int xdp_up(struct xdp_dev *dev,
+struct xdp_dev *xdp_open(const char *name,
 	unsigned int num_qps, unsigned int buf_size, unsigned int mtu_frame);
-void xdp_down(struct xdp_dev *dev);
-struct xdp_dev *xdp_open(const char *name);
 void xdp_close(struct xdp_dev *dev);
-
 #endif /* _LIB_MAIN_H */

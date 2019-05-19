@@ -170,32 +170,21 @@ err_alloc_ifnames:
 
 static int xdpd_device_init(struct xdpd *xdpd, int dev_idx)
 {
-	int err;
-
-	xdpd->devs[dev_idx] = xdp_open(xdpd->ifnames[dev_idx]);
+	xdpd->devs[dev_idx] = xdp_open(xdpd->ifnames[dev_idx],
+		xdpd->num_threads, xdpd->buf_size, xdpd->mtu_frame);
 	if(!xdpd->devs[dev_idx]){
 		xdpd_log(LOG_ERR, "failed to xdp_open, idx = %d", dev_idx);
 		goto err_open;
 	}
 
-	err = xdp_up(xdpd->devs[dev_idx],
-		xdpd->num_threads, xdpd->buf_size, xdpd->mtu_frame);
-	if(err < 0){
-		xdpd_log(LOG_ERR, "failed to xdp_up, idx = %d", dev_idx);
-		goto err_up;
-	}
-
 	return 0;
 
-err_up:
-	xdp_close(xdpd->devs[dev_idx]);
 err_open:
 	return -1;
 }
 
 static void xdpd_device_destroy(struct xdpd *xdpd, int dev_idx)
 {
-	xdp_down(xdpd->devs[dev_idx]);
 	xdp_close(xdpd->devs[dev_idx]);
 }
 

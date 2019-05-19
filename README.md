@@ -19,7 +19,7 @@ Usage:
 
 ### An example
 ```
-$ sudo LD_LIBRARY_PATH=/usr/local/lib64/ ./main.out -c 0,1,2,3 -p eth0,eth1,eth2,eth3 -s 0,2,3,1,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb,fd00:0:0:1::,64,120 -s 1,3,2,0,cc:cc:cc:cc:cc:cc,dd:dd:dd:dd:dd:dd,fd00:0:0:2::,64,120
+$ sudo ./main.out -c 0,1,2,3 -p eth0,eth1,eth2,eth3 -s 0,2,3,1,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb,fd00:0:0:1::,64,120 -s 1,3,2,0,cc:cc:cc:cc:cc:cc,dd:dd:dd:dd:dd:dd,fd00:0:0:2::,64,120
 ```
 
 ## Build and Install
@@ -38,7 +38,7 @@ $ wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.tar.xz
 $ tar -xf linux-4.19.tar.xz
 $ sudo cp ~/linux-4.19/include/uapi/linux/if_xdp.h /usr/include/linux/if_xdp.h
 $ sudo cp ~/linux-4.19/include/uapi/linux/if_link.h /usr/include/linux/if_link.h
-$ sudo cp  ~/linux-4.19/include/uapi/linux/bpf.h  /usr/include/linux/bpf.h
+$ sudo cp ~/linux-4.19/include/uapi/linux/bpf.h  /usr/include/linux/bpf.h
 
 $ sudo apt-get install libelf-dev
 $ cd ~/linux-4.19/tools/lib/bpf

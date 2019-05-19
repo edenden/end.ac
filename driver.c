@@ -219,29 +219,24 @@ int xdp_slot_assign(struct xdp_buf *buf,
 	struct xdp_plane *plane, unsigned int port_idx)
 {
 	struct xdp_port *port;
-	int slot_next, slot_index, i;
+	int slot_index, i;
 
 	port = &plane->ports[port_idx];
-	slot_next = port->rx_slot_next;
 
-	for(i = 0; i < buf->count_devbuf; i++){
-		slot_index = port->rx_slot_offset + slot_next;
+	for(i = 0; i < buf->slot_count_devbuf; i++){
+		slot_index = port->rx_slot_offset + port->rx_slot_next;
+
+		port->rx_slot_next++;
+		port->rx_slot_next &= buf->slot_mask_devbuf;
+
 		if(!(buf->slots[slot_index] & XDP_SLOT_INFLIGHT)){
 			goto out;
 		}
-
-		slot_next++;
-		if(slot_next == buf->count_devbuf)
-			slot_next = 0;
 	}
 
 	return -1;
 
 out:
-	port->rx_slot_next = slot_next + 1;
-	if(port->rx_slot_next == buf->count_devbuf)
-		port->rx_slot_next = 0;
-
 	buf->slots[slot_index] |= XDP_SLOT_INFLIGHT;
 	return slot_index;
 }
