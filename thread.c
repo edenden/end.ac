@@ -195,7 +195,7 @@ static inline int thread_process_irq(struct xdpd_thread *thread,
 
 	port_index = ep_desc->port_index;
 
-	/* Rx descripter cleaning */
+	/* Rx/Tx queues */
 	xdp_rx_pull(thread->plane, port_index, thread->buf);
 
 	forward_process(thread, port_index);
@@ -204,9 +204,14 @@ static inline int thread_process_irq(struct xdpd_thread *thread,
 		xdp_tx_fill(thread->plane, i, thread->buf);
 	}
 
-	/* Tx descripter cleaning */
-	xdp_tx_pull(thread->plane, port_index, thread->buf);
+	/* Umem queues */
+	/* XXX: To be revised
+	 * FQ-empty/CQ-full notification feature will be introduced
+	 * in the future.
+	 * Ref: https://www.spinics.net/lists/netdev/msg556499.html
+	 */
 	for(i = 0; i < thread->plane->num_ports; i++){
+		xdp_tx_pull(thread->plane, i, thread->buf);
 		xdp_rx_fill(thread->plane, i, thread->buf);
 	}
 

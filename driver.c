@@ -192,7 +192,6 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	total_pull = 0;
 
 	while(total_pull < XDPD_TX_BUDGET){
-printf("Tx pull desc_idx = %d, producer = %d\n", desc_idx, *cq_ring->producer);
 		if(desc_idx == *cq_ring->producer){
 			break;
 		}
@@ -206,8 +205,6 @@ printf("Tx pull desc_idx = %d, producer = %d\n", desc_idx, *cq_ring->producer);
 		desc_idx++;
 		total_pull++;
 	}
-
-printf("Tx-pull total_pull = %d\n", total_pull);
 
 	if(total_pull){
 		wmb();

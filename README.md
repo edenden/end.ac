@@ -45,6 +45,8 @@ $ cd ~/linux-4.19/tools/lib/bpf
 $ make
 $ sudo make install
 $ sudo make install_headers
+$ sudo ln -sf /usr/local/lib64/libbpf.a /lib/libbpf.a
+$ sudo ln -sf /usr/local/lib64/libbpf.so /lib/libbpf.so
 ```
 
 Build bpf binary
