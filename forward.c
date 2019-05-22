@@ -7,6 +7,7 @@
 #include <netinet/ip.h>
 #include <netinet/ip6.h>
 #include <stddef.h>
+#include <linux/seg6.h>
 
 #include "main.h"
 #include "forward.h"
@@ -14,7 +15,6 @@
 #include "driver.h"
 
 #ifdef SRV6_END_AC
-#include <linux/seg6.h>
 #include <pthread.h>
 
 static inline uint16_t xdp_ip_check_inc(uint16_t old_check,

@@ -44,8 +44,6 @@ int xdp_sock_prog(struct xdp_md *ctx)
 	eth = data;
 
 	switch(ntohs(eth->h_proto)){
-	case ETH_P_ARP:
-		break;
 	case ETH_P_IP:
 		if((void *)(eth + 1) + sizeof(struct iphdr) > data_end)
 			goto out;
@@ -76,6 +74,8 @@ int xdp_sock_prog(struct xdp_md *ctx)
 			ret = bpf_redirect_map(&xsks_map,
 				ctx->rx_queue_index, 0);
 		}
+		break;
+	default:
 		break;
 	}
 
