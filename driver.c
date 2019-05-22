@@ -33,6 +33,7 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_ring *fq_ring;
 	unsigned int total_fill;
 	uint32_t next_to_use, desc_idx;
+	uint32_t cons;
 	uint64_t *desc;
 	int slot_index;
 
@@ -42,9 +43,11 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	desc_idx = *fq_ring->producer;
 	total_fill = 0;
 
+	cons = *fq_ring->consumer;
+
 	while(1){
 		if(((desc_idx + 1) & (XDPD_RX_DESC - 1))
-			== (*fq_ring->consumer & (XDPD_RX_DESC - 1)))
+			== (cons & (XDPD_RX_DESC - 1)))
 			break;
 
 		slot_index = xdp_slot_assign(buf, plane, port_idx);
@@ -76,6 +79,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_vec_ref *vec;
 	struct xdp_ring *tx_ring;
 	uint32_t next_to_use, desc_idx;
+	uint32_t cons;
 	unsigned int total_fill;
 	struct xdp_desc *desc;
 	int i, err;
@@ -88,9 +92,11 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	total_fill = 0;
 	i = 0;
 
+	cons = *tx_ring->consumer;
+
 	while(i++ < vec->num){
 		if(((desc_idx + 1) & (XDPD_TX_DESC - 1))
-			== (*tx_ring->consumer & (XDPD_TX_DESC - 1))){
+			== (cons & (XDPD_TX_DESC - 1))){
 			port->count_tx_xmit_failed++;
 			xdp_slot_release(buf,
 				vec->packets[total_fill]->slot_index);
@@ -134,6 +140,7 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_vec *vec;
 	struct xdp_ring *rx_ring;
 	uint32_t next_to_clean, desc_idx;
+	uint32_t prod;
 	struct xdp_desc *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;
@@ -145,8 +152,11 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	desc_idx = *rx_ring->consumer;
 	total_pull = 0;
 
+	prod = *rx_ring->producer;
+	rmb();
+
 	while(total_pull < XDPD_RX_BUDGET){
-		if(desc_idx == *rx_ring->producer){
+		if(desc_idx == prod){
 			break;
 		}
 
@@ -185,6 +195,7 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port;
 	struct xdp_ring *cq_ring;
 	uint32_t next_to_clean, desc_idx;
+	uint32_t prod;
 	uint64_t *desc;
 	unsigned int total_pull;
 	unsigned int slot_index;
@@ -195,8 +206,11 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	desc_idx = *cq_ring->consumer;
 	total_pull = 0;
 
+	prod = *cq_ring->producer;
+	rmb();
+
 	while(total_pull < XDPD_TX_BUDGET){
-		if(desc_idx == *cq_ring->producer){
+		if(desc_idx == prod){
 			break;
 		}
 
