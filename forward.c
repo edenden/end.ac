@@ -136,6 +136,7 @@ static void forward_start(struct xdp_plane *plane, unsigned int port_idx,
 		pkt->layer2 = NULL;
 		pkt->layer3 = NULL;
 		pkt->flag = 0;
+		pkt->nexthdr = 0;
 	}
 	vec_ref.num = vec->num;
 	forward_eth(plane, port_idx, &vec_ref);
@@ -461,6 +462,7 @@ static void forward_ip6_ext(struct xdp_plane *plane, unsigned int port_idx,
 			if(pkt->flag & PACKET_SRV6_UPDATED){
 				pkt->flag &= ~PACKET_SRV6_UPDATED;
 				pkt->current = pkt->layer3;
+				pkt->nexthdr = 0;
 				vec_ip6.packets[vec_ip6.num++] = pkt;
 			}
 			break;
