@@ -23,7 +23,7 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);
 void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);
-unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
+void xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);
 void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);

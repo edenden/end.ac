@@ -133,7 +133,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	return;
 }
 
-unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
+void xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf)
 {
 	struct xdp_port *port;
@@ -178,7 +178,6 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	}
 
 	if(total_pull){
-		wmb();
 		*rx_ring->consumer = desc_idx;
 
 		xdp_rx_fill(plane, port_idx, buf);
@@ -186,7 +185,7 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 
 	port->count_rx_clean_total += total_pull;
 	vec->num = total_pull;
-	return total_pull;
+	return;
 }
 
 void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
@@ -225,7 +224,6 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	}
 
 	if(total_pull){
-		wmb();
 		*cq_ring->consumer = desc_idx;
 	}
 
