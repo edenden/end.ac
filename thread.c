@@ -207,7 +207,7 @@ static inline int thread_process_irq(struct xdpd_thread *thread,
 	/* Umem queues */
 	/* XXX: To be revised
 	 * FQ-empty/CQ-full notification feature will be introduced
-	 * in the future.
+	 * in the future. It will make followings unnecessary.
 	 * Ref: https://www.spinics.net/lists/netdev/msg556499.html
 	 */
 	for(i = 0; i < thread->plane->num_ports; i++){

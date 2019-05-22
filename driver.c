@@ -73,7 +73,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf)
 {
 	struct xdp_port *port;
-	struct xdp_vec *vec;
+	struct xdp_vec_ref *vec;
 	struct xdp_ring *tx_ring;
 	uint32_t next_to_use, desc_idx;
 	unsigned int total_fill;
@@ -81,7 +81,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	int i, err;
 
 	port = &plane->ports[port_idx];
-	vec = &port->vec;
+	vec = &port->vec_tx;
 	tx_ring = &port->tx_ring;
 
 	desc_idx = *tx_ring->producer;
@@ -93,15 +93,15 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 			== (*tx_ring->consumer & (XDPD_TX_DESC - 1))){
 			port->count_tx_xmit_failed++;
 			xdp_slot_release(buf,
-				vec->packets[total_fill].slot_index);
+				vec->packets[total_fill]->slot_index);
 			continue;
 		}
 
 		next_to_use = desc_idx & (XDPD_TX_DESC - 1);
 		desc = &((struct xdp_desc *)tx_ring->descs)[next_to_use];
 		desc->addr = xdp_slot_addr_rel(buf,
-			vec->packets[total_fill].slot_index);
-		desc->len = vec->packets[total_fill].slot_size;
+			vec->packets[total_fill]->slot_index);
+		desc->len = vec->packets[total_fill]->slot_size;
 
 		xdp_print("Tx: addr = %p size = %d port_idx = %d\n",
 			(void *)desc->addr, desc->len, port_idx);
@@ -119,6 +119,8 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 			xdp_print("Tx: packet sending error = %d\n", err);
 			return;
 		}
+
+		xdp_tx_pull(plane, port_idx, buf);
 	}
 
 	vec->num = 0;
@@ -137,7 +139,7 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	unsigned int slot_index;
 
 	port = &plane->ports[port_idx];
-	vec = &port->vec;
+	vec = &port->vec_rx;
 	rx_ring = &port->rx_ring;
 
 	desc_idx = *rx_ring->consumer;
@@ -168,6 +170,8 @@ unsigned int xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	if(total_pull){
 		wmb();
 		*rx_ring->consumer = desc_idx;
+
+		xdp_rx_fill(plane, port_idx, buf);
 	}
 
 	port->count_rx_clean_total += total_pull;

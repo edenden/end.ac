@@ -14,10 +14,6 @@
 #include "bpf_helpers.h"
 #include "bpf.h"
 
-#ifdef SRV6_END_AC
-#define IPPROTO_SRV6 43
-#endif
-
 struct bpf_map_def SEC("maps") xsks_map = {
 	.type = BPF_MAP_TYPE_XSKMAP,
 	.key_size = sizeof(int),
@@ -71,7 +67,12 @@ int xdp_sock_prog(struct xdp_md *ctx)
 		if(ip6->hop_limit == 1)
 			goto out;
 
-		if(ip6->nexthdr == IPPROTO_SRV6){
+		if(ip6->flow_lbl[2]){
+			ret = bpf_redirect_map(&xsks_map,
+				ctx->rx_queue_index, 0);
+		}
+
+		if(ip6->nexthdr == IPPROTO_ROUTING){
 			ret = bpf_redirect_map(&xsks_map,
 				ctx->rx_queue_index, 0);
 		}

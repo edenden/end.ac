@@ -3,6 +3,7 @@
 
 #include "thread.h"
 
-void forward_process(struct xdpd_thread *thread, unsigned int port_index);
+void forward_process(struct xdpd_thread *thread, unsigned int port_idx);
+
 
 #endif /* _FORWARD_H */

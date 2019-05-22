@@ -99,15 +99,32 @@ struct xdp_packet {
 	void			*slot_buf;
 	unsigned int		slot_size;
 	unsigned int		slot_index;
+	int			out;
+	void			*current;
+	void			*layer2;
+	void			*layer3;
+	unsigned int		flag;
+	uint8_t			nexthdr;
 };
+
+#define PACKET_SRV6_MATCH	0x0001
+#define PACKET_SRV6_UPDATED	0x0002
+
+#ifdef SRV6_END_AC
+#define PACKET_SRV6_ENDAC_MATCH	0x0010
+#endif
 
 struct xdp_vec {
 	int			num;
 	struct xdp_packet	packets[XDPD_RX_BUDGET];
 };
 
+struct xdp_vec_ref {
+	int			num;
+	struct xdp_packet	*packets[XDPD_RX_BUDGET];
+};
+
 #ifdef SRV6_END_AC
-#define IPPROTO_SRV6 43
 struct sr_cache {
 	char			buf[2048];
 	unsigned int		size;
@@ -121,7 +138,8 @@ struct sr_sid {
 };
 
 struct sr_cache_table {
-	struct sr_cache		cache[256];
+	struct sr_cache		cache4[256];
+	struct sr_cache		cache6[256];
 	struct sr_sid		sid;
 	unsigned int		ifidx[4];
 	char			mac_addr[2][ETH_ALEN];
@@ -140,7 +158,8 @@ struct xdp_port {
 	struct xdp_ring		cq_ring;
 	struct xdp_ring		fq_ring;
 
-	struct xdp_vec		vec;
+	struct xdp_vec		vec_rx;
+	struct xdp_vec_ref	vec_tx;
 
 	unsigned int		num_qps;
 	unsigned int		mtu_frame;

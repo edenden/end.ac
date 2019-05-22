@@ -127,7 +127,11 @@ int main(int argc, char **argv)
 	for(i = 0; i < 2; i++){
 		for(j = 0; j < 256; j++){
 			pthread_rwlock_init(
-				&sr_cache_table[i].cache[j].lock, NULL);
+				&sr_cache_table[i].cache4[j].lock, NULL);
+			sr_cache_table[i].cache4[j].size = 0;
+			pthread_rwlock_init(
+				&sr_cache_table[i].cache6[j].lock, NULL);
+			sr_cache_table[i].cache6[j].size = 0;
 		}
 	}
 #endif

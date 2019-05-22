@@ -169,7 +169,8 @@ static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
 	port->count_rx_clean_total	= 0;
 	port->count_tx_xmit_failed	= 0;
 	port->count_tx_clean_total	= 0;
-	port->vec.num = 0;
+	port->vec_rx.num = 0;
+	port->vec_tx.num = 0;
 
 	port->xfd = socket(AF_XDP, SOCK_RAW, 0);
 	if(port->xfd < 0)

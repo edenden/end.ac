@@ -17,24 +17,31 @@
 #include <linux/seg6.h>
 #include <pthread.h>
 
-static inline uint16_t forward_endac_check_inc(uint16_t old_check,
+static inline uint16_t xdp_ip_check_inc(uint16_t old_check,
 	uint16_t old, uint16_t new);
-static inline int forward_endac_ip(struct iphdr *ip, uint8_t tos);
-static inline int forward_endac_ip6(struct ip6_hdr *ip6);
-static inline int forward_endac_srv6(struct ip6_hdr *ip6,
-	struct ipv6_sr_hdr *srv6);
-static inline void forward_endac_eth(struct ethhdr *eth,
-	void *dst, void *src, uint16_t proto);
-static int forward_srv6_inner(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet);
-static int forward_srv6_outer(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet);
-#else
-static int forward_ip_process(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet);
-static int forward_ip6_process(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet);
+static void forward_endac4_in(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_endac6_in(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_endac4_out(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_endac6_out(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
 #endif
+
+static inline unsigned int xdp_pkt_rest(struct xdp_packet *pkt);
+static void forward_start(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec *vec);
+static void forward_eth(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_ip(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static void forward_ip6_ext(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec);
+static int process_ip6_ext_sr(struct xdp_packet *pkt);
+static int process_ip6_ext_gen(struct xdp_packet *pkt);
 
 #ifdef DEBUG
 void forward_dump(struct xdp_packet *packet)
@@ -55,15 +62,18 @@ void forward_dump(struct xdp_packet *packet)
 }
 #endif
 
-void forward_process(struct xdpd_thread *thread, unsigned int port_index)
+void forward_process(struct xdpd_thread *thread, unsigned int port_idx)
 {
+	struct xdp_plane *plane;
 	struct xdp_port *port;
-	struct xdp_vec *vec, *vec_target;
-	struct ethhdr *eth;
-	int i, ret;
+	struct xdp_vec *vec_rx;
+	struct xdp_vec_ref *vec_tx;
+	struct xdp_packet *pkt;
+	int i;
 
-	port = &thread->plane->ports[port_index];
-	vec = &port->vec;
+	plane = thread->plane;
+	port = &plane->ports[port_idx];
+	vec_rx = &port->vec_rx;
 
 	/* software prefetch is not needed when DDIO is available */
 #ifdef DDIO_UNSUPPORTED
@@ -72,53 +82,29 @@ void forward_process(struct xdpd_thread *thread, unsigned int port_index)
 	}
 #endif
 
-	for(i = 0; i < vec->num; i++){
-#ifdef DEBUG
-		forward_dump(&vec->packets[i]);
-#endif
+	forward_start(plane, port_idx, vec_rx);
 
-		/* TBD: Support jumbo frame */
-		eth = (struct ethhdr *)vec->packets[i].slot_buf;
-		switch(ntohs(eth->h_proto)){
-		case ETH_P_IP:
-#ifdef SRV6_END_AC
-			ret = forward_srv6_inner(thread,
-				port_index, &vec->packets[i]);
-#else
-			ret = forward_ip_process(thread,
-				port_index, &vec->packets[i]);
-#endif
-			break;
-		case ETH_P_IPV6:
-#ifdef SRV6_END_AC
-			ret = forward_srv6_outer(thread,
-				port_index, &vec->packets[i]);
-#else
-			ret = forward_ip6_process(thread,
-				port_index, &vec->packets[i]);
-#endif
-			break;
-		default:
-			ret = -1;
-			break;
-		}
-
-		if(ret < 0){
-			xdp_slot_release(thread->buf,
-				vec->packets[i].slot_index);
+	for(i = 0; i < vec_rx->num; i++){
+		pkt = &vec_rx->packets[i];
+		if(pkt->out < 0){
+			xdp_slot_release(thread->buf, pkt->slot_index);
 			continue;
 		}
 
-		vec_target = &thread->plane->ports[ret].vec;
-		vec_target->packets[vec_target->num++] = vec->packets[i];
+		vec_tx = &thread->plane->ports[pkt->out].vec_tx;
+		vec_tx->packets[vec_tx->num++] = &vec_rx->packets[i];
 	}
-	vec->num = 0;
 
 	return;
 }
 
+static inline unsigned int xdp_pkt_rest(struct xdp_packet *pkt)
+{
+	return pkt->slot_size - (pkt->current - pkt->slot_buf);
+}
+
 #ifdef SRV6_END_AC
-static inline uint16_t forward_endac_check_inc(uint16_t old_check,
+static inline uint16_t xdp_ip_check_inc(uint16_t old_check,
 	uint16_t old, uint16_t new)
 {
 	uint32_t check;
@@ -128,300 +114,750 @@ static inline uint16_t forward_endac_check_inc(uint16_t old_check,
 	check = (uint32_t)old_check + old + new;
 	return htons(~((uint16_t)(check >> 16) + (check & 0xffff)));
 }
+#endif
 
-static inline int forward_endac_ip(struct iphdr *ip, uint8_t tos)
+static void forward_start(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec *vec)
 {
+	struct xdp_vec_ref vec_ref;
+	struct xdp_packet *pkt;
+	int i;
+
+	for(i = 0; i < vec->num; i++){
+#ifdef DEBUG
+		forward_dump(&vec->packets[i]);
+#endif
+
+		vec_ref.packets[i] = &vec->packets[i];
+
+		pkt = vec_ref.packets[i];
+		pkt->out = -1;
+		pkt->current = pkt->slot_buf;
+		pkt->layer2 = NULL;
+		pkt->layer3 = NULL;
+		pkt->flag = 0;
+	}
+	vec_ref.num = vec->num;
+	forward_eth(plane, port_idx, &vec_ref);
+	return;
+}
+
+static void forward_eth(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port;
+	struct xdp_packet *pkt;
+	struct xdp_vec_ref vec_ip, vec_ip6;
+#ifdef SRV6_END_AC
+	struct xdp_vec_ref vec_endac4_in;
+	struct xdp_vec_ref vec_endac6_in;
+#endif
+	struct ethhdr *eth;
+	int i;
+
+	port = &plane->ports[port_idx];
+	vec_ip.num = 0;
+	vec_ip6.num = 0;
+#ifdef SRV6_END_AC
+	vec_endac4_in.num = 0;
+	vec_endac6_in.num = 0;
+#endif
+
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
+
+		if(xdp_pkt_rest(pkt) < sizeof(struct ethhdr))
+			continue;
+
+		eth = (struct ethhdr *)pkt->current;
+		pkt->layer2 = eth;
+		pkt->current = eth + 1;
+
+		switch(ntohs(eth->h_proto)){
+		case ETH_P_IP:
+#ifdef SRV6_END_AC
+			if(port->mode & SRV6_END_AC_MODE_INNER)
+				vec_endac4_in.packets[vec_endac4_in.num++] = pkt;
+			else
+				vec_ip.packets[vec_ip.num++] = pkt;
+#else
+			vec_ip->packets[vec_ip->num++] = pkt;
+#endif
+			break;
+		case ETH_P_IPV6:
+#ifdef SRV6_END_AC
+			if(port->mode & SRV6_END_AC_MODE_INNER)
+				vec_endac6_in.packets[vec_endac6_in.num++] = pkt;
+			else
+				vec_ip6.packets[vec_ip6.num++] = pkt;
+#else
+			vec_ip6->packets[vec_ip6->num++] = pkt;
+#endif
+			break;
+		default:
+			break;
+		}
+	}
+
+	if(vec_ip.num)
+		forward_ip(plane, port_idx, &vec_ip);
+	if(vec_ip6.num)
+		forward_ip6(plane, port_idx, &vec_ip6);
+#ifdef SRV6_END_AC
+	if(vec_endac4_in.num)
+		forward_endac4_in(plane, port_idx, &vec_endac4_in);
+	if(vec_endac6_in.num)
+		forward_endac6_in(plane, port_idx, &vec_endac6_in);
+#endif
+	return;
+}
+
+static void forward_ip(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port;
+	struct xdp_packet *pkt;
+#if 0
+	struct ethhdr *eth;
+#endif
+	struct iphdr *ip;
 	uint32_t check;
+	int i;
 
-	if(unlikely(ip->ttl == 1))
-		goto drop;
+	port = &plane->ports[port_idx];
+	(void)port;
 
-	ip->ttl--;
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-	check = ip->check;
-	check += htons(0x0100);
-	ip->check = check + ((check >= 0xFFFF) ? 1 : 0);
+		if(xdp_pkt_rest(pkt) < sizeof(struct iphdr))
+			continue;
 
-	ip->check = forward_endac_check_inc(ip->check, ip->tos, tos);
-	ip->tos = tos;
+		ip = (struct iphdr *)pkt->current;
+		pkt->layer3 = ip;
+		pkt->current = ip + 1;
 
-	return 0;
+#if 0
+		fib_entry[i] = fib_lookup(pkt);
+#endif
+	}
 
-drop:
-	return -1;
-}
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-static inline int forward_endac_ip6(struct ip6_hdr *ip6)
-{
-	if(unlikely(ip6->ip6_hlim == 1))
-		goto drop;
+#if 0
+		if(!fib_entry[i])
+			continue;
 
-	ip6->ip6_hlim--;
+		neigh_entry = neigh_lookup(fib_entry[i]);
+		if(!neigh_entry){
+			/* XXX: Inject to kernel */
+			continue;
+		}
+#endif
 
-	return 0;
+		ip = (struct iphdr *)pkt->layer3;
 
-drop:
-	return -1;
-}
+		if(ip->ttl == 1){
+			/* XXX: Inject to kernel */
+			continue;
+		}
 
-static inline int forward_endac_srv6(struct ip6_hdr *ip6,
-	struct ipv6_sr_hdr *srv6)
-{
-	if(unlikely(srv6->segments_left == 0))
-		goto drop;
+		ip->ttl--;
 
-	if(srv6->hdrlen * 8 < srv6->segments_left * 16)
-		goto drop;
+		check = ip->check;
+		check += htons(0x0100);
+		ip->check = check + ((check >= 0xFFFF) ? 1 : 0);
 
-	srv6->segments_left--;
-	memcpy(&ip6->ip6_dst, &srv6->segments[srv6->segments_left], 16);
+#if 0
+		eth = (struct ethhdr *)pkt->layer2;
+		memcpy(eth->h_dest, neigh_entry->dst_mac, ETH_ALEN);
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+#endif
 
-	if(srv6->nexthdr != IPPROTO_IPIP)
-		goto drop;
-
-	return 0;
-
-drop:
-	return -1;
-}
-
-static inline void forward_endac_eth(struct ethhdr *eth,
-	void *dst, void *src, uint16_t proto)
-{
-	memcpy(eth->h_dest, dst, ETH_ALEN);
-	memcpy(eth->h_source, src, ETH_ALEN);
-	eth->h_proto = htons(proto);
+		pkt->nexthdr = ip->protocol;
+	}
 
 	return;
 }
 
-
-static int forward_srv6_inner(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet)
+static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
 {
-	struct xdp_port		*port;
-	struct ethhdr		*eth;
-	struct iphdr		*ip;
-	struct ip6_hdr		*ip6;
+	struct xdp_port *port;
+	struct xdp_packet *pkt;
+	struct xdp_vec_ref vec_ip6_ext;
+#ifdef SRV6_END_AC
+	struct xdp_vec_ref vec_endac4_out;
+	struct xdp_vec_ref vec_endac6_out;
 	struct sr_cache_table	*sr_table;
-	struct sr_cache		*sr_cache;
-	uint8_t			sr_arg;
-	unsigned int		len;
-	int			ret, err;
+	struct sr_sid		*sr_sid;
+#endif
+#if 0
+	struct ethhdr *eth;
+#endif
+	struct ip6_hdr *ip6;
+	int i;
 
-printf("forward_srv6_inner\n");
-	port = &thread->plane->ports[port_index];
-	len = packet->slot_size;
-
-	if(!(port->mode & SRV6_END_AC_MODE_INNER))
-		goto packet_drop;
-
-	if(len < sizeof(struct ethhdr))
-		goto packet_drop;
-	len -= sizeof(struct ethhdr);
-	eth = (struct ethhdr *)packet->slot_buf;
-
-	forward_endac_eth(eth,
-		port->bound_mac_addr, port->mac_addr, ETH_P_IPV6);
-
-	if(len < sizeof(struct iphdr))
-		goto packet_drop;
-	len -= sizeof(struct iphdr);
-	ip = (struct iphdr *)(eth + 1);
-
-	sr_arg = ip->tos;
-
-	err = forward_endac_ip(ip, 0);
-	if(err < 0)
-		goto packet_drop;
-
+	port = &plane->ports[port_idx];
+	vec_ip6_ext.num = 0;
+#ifdef SRV6_END_AC
+	vec_endac4_out.num = 0;
+	vec_endac6_out.num = 0;
 	sr_table = &sr_cache_table[port->bound_table_idx];
+	sr_sid = &sr_table->sid;
+#endif
 
-	sr_cache = &sr_table->cache[sr_arg];
-	pthread_rwlock_rdlock(&sr_cache->lock);
-	if(!sr_cache->size){
-		pthread_rwlock_unlock(&sr_cache->lock);
-		goto packet_drop;
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
+
+		if(xdp_pkt_rest(pkt) < sizeof(struct ip6_hdr))
+			continue;
+
+		ip6 = (struct ip6_hdr *)pkt->current;
+		pkt->layer3 = ip6;
+		pkt->current = ip6 + 1;
+
+#if 0
+		fib_entry[i] = fib_lookup(pkt);
+#endif
+
+#ifdef SRV6_END_AC
+		if(port->mode & SRV6_END_AC_MODE_OUTER
+		&& !memcmp(&ip6->ip6_dst, sr_sid->sid, sr_sid->len)){
+			pkt->flag |= PACKET_SRV6_MATCH;
+			pkt->flag |= PACKET_SRV6_ENDAC_MATCH;
+		}else{
+			pkt->flag &= ~PACKET_SRV6_MATCH;
+			pkt->flag &= ~PACKET_SRV6_ENDAC_MATCH;
+		}
+#endif
 	}
 
-	if(packet->slot_size + sr_cache->size > thread->buf->slot_size){
-		pthread_rwlock_unlock(&sr_cache->lock);
-		goto packet_drop;
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
+
+#if 0
+		if(!fib_entry[i])
+			continue;
+
+		neigh_entry = neigh_lookup(fib_entry[i]);
+		if(!neigh_entry){
+			/* XXX: Inject to kernel */
+			continue;
+		}
+#endif
+
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+
+		if(ip6->ip6_hlim == 1){
+			/* XXX: Inject to kernel */
+			continue;
+		}
+
+		ip6->ip6_hlim--;
+
+#if 0
+		eth = (struct ethhdr *)pkt->layer2;
+		memcpy(eth->h_dest, neigh_entry->dst_mac, ETH_ALEN);
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+#endif
+
+		pkt->nexthdr = ip6->ip6_nxt;
+
+		switch(pkt->nexthdr){
+		case IPPROTO_ROUTING:
+		case IPPROTO_HOPOPTS:
+		case IPPROTO_FRAGMENT:
+		case IPPROTO_DSTOPTS:
+			vec_ip6_ext.packets[vec_ip6_ext.num++] = pkt;
+			break;
+#ifdef SRV6_END_AC
+		case IPPROTO_IPIP:
+			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+				vec_endac4_out.packets[vec_endac4_out.num++] = pkt;
+			break;
+		case IPPROTO_IPV6:
+			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+				vec_endac6_out.packets[vec_endac6_out.num++] = pkt;
+			break;
+#endif
+		default:
+			break;
+		}
 	}
 
-	memcpy((uint8_t *)(eth + 1) + sr_cache->size,
-		(uint8_t *)(eth + 1),
-		packet->slot_size - sizeof(struct ethhdr));
-	memcpy((uint8_t *)(eth + 1), sr_cache->buf, sr_cache->size);
-	pthread_rwlock_unlock(&sr_cache->lock);
+	if(vec_ip6_ext.num)
+		forward_ip6_ext(plane, port_idx, &vec_ip6_ext);
+#ifdef SRV6_END_AC
+	if(vec_endac4_out.num)
+		forward_endac4_out(plane, port_idx, &vec_endac4_out);
+	if(vec_endac6_out.num)
+		forward_endac6_out(plane, port_idx, &vec_endac6_out);
+#endif
+	return;
+}
 
-	ip6 = (struct ip6_hdr *)(eth + 1);
+static void forward_ip6_ext(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port;
+	struct xdp_packet *pkt;
+	struct xdp_vec_ref vec_ip6;
+	struct xdp_vec_ref vec_ip6_ext;
+#ifdef SRV6_END_AC
+	struct xdp_vec_ref vec_endac4_out;
+	struct xdp_vec_ref vec_endac6_out;
+#endif
+	int i, ret;
 
-	err = forward_endac_ip6(ip6);
-	if(err < 0)
-		goto packet_drop;
+	port = &plane->ports[port_idx];
+	(void)port;
+	vec_ip6.num = 0;
+	vec_ip6_ext.num = 0;
+#ifdef SRV6_END_AC
+	vec_endac4_out.num = 0;
+	vec_endac6_out.num = 0;
+#endif
 
-	packet->slot_size += sr_cache->size;
-	ret = port->bound_port_idx;
-	return ret;
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-packet_drop:
+		/*
+		 * Still handle IPv6 Extension header by per packet processing
+		 * for the aspect of code perspective.
+		 */
+		switch(pkt->nexthdr){
+		case IPPROTO_ROUTING:
+			/* Only SRv6 has been implemented for now. */
+			ret = process_ip6_ext_sr(pkt);
+			break;
+		default:
+			ret = process_ip6_ext_gen(pkt);
+			break;
+		}
+
+		if(ret < 0)
+			continue;
+
+		switch(pkt->nexthdr){
+		case IPPROTO_ROUTING:
+		case IPPROTO_HOPOPTS:
+		case IPPROTO_FRAGMENT:
+		case IPPROTO_DSTOPTS:
+			vec_ip6_ext.packets[vec_ip6_ext.num++] = pkt;
+			break;
+#ifdef SRV6_END_AC
+		case IPPROTO_IPIP:
+			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+				vec_endac4_out.packets[vec_endac4_out.num++] = pkt;
+			break;
+		case IPPROTO_IPV6:
+			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+				vec_endac6_out.packets[vec_endac6_out.num++] = pkt;
+			break;
+#endif
+		default:
+			if(pkt->flag & PACKET_SRV6_UPDATED){
+				pkt->flag &= ~PACKET_SRV6_UPDATED;
+				pkt->current = pkt->layer3;
+				vec_ip6.packets[vec_ip6.num++] = pkt;
+			}
+			break;
+		}
+	}
+
+	if(vec_ip6_ext.num)
+		forward_ip6_ext(plane, port_idx, &vec_ip6_ext);
+#ifdef SRV6_END_AC
+	if(vec_endac4_out.num)
+		forward_endac4_out(plane, port_idx, &vec_endac4_out);
+	if(vec_endac6_out.num)
+		forward_endac6_out(plane, port_idx, &vec_endac6_out);
+#endif
+	if(vec_ip6.num)
+		forward_ip6(plane, port_idx, &vec_ip6);
+	return;
+
+}
+
+static int process_ip6_ext_sr(struct xdp_packet *pkt)
+{
+	struct ip6_hdr *ip6;
+	struct ipv6_sr_hdr *srv6;
+
+	if(xdp_pkt_rest(pkt) < sizeof(struct ipv6_sr_hdr))
+		goto err;
+
+	srv6 = (struct ipv6_sr_hdr *)pkt->current;
+	pkt->current = srv6 + 1;
+
+	if(xdp_pkt_rest(pkt) < srv6->hdrlen * 8)
+		goto err;
+
+	pkt->current += srv6->hdrlen * 8;
+
+	if((pkt->flag & PACKET_SRV6_MATCH)
+	&& !(pkt->flag & PACKET_SRV6_UPDATED)
+	&& (srv6->segments_left > 0)){
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+
+		if(srv6->hdrlen * 8 < srv6->segments_left * 16)
+			goto err;
+
+		srv6->segments_left--;
+		memcpy(&ip6->ip6_dst,
+			&srv6->segments[srv6->segments_left], 16);
+
+		pkt->flag |= PACKET_SRV6_UPDATED;
+	}
+
+	pkt->nexthdr = srv6->nexthdr;
+	return 0;
+
+err:
 	return -1;
 }
 
-static int forward_srv6_outer(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet)
+static int process_ip6_ext_gen(struct xdp_packet *pkt)
 {
-	struct xdp_port		*port;
-	struct ethhdr		*eth;
-	struct iphdr		*ip;
-	struct ip6_hdr		*ip6;
-	struct ipv6_sr_hdr	*srv6;
+	struct ip6_ext *ip6_ext;
+
+	if(xdp_pkt_rest(pkt) < 8)
+		goto err;
+
+	ip6_ext = (struct ip6_ext *)pkt->current;
+	pkt->current += 8;
+
+	if(xdp_pkt_rest(pkt) < ip6_ext->ip6e_len * 8)
+		goto err;
+
+	pkt->current += ip6_ext->ip6e_len * 8;
+
+	pkt->nexthdr = ip6_ext->ip6e_nxt;
+	return 0;
+
+err:
+	return -1;
+}
+
+#ifdef SRV6_END_AC
+static void forward_endac4_in(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port, *dst_port;
+	struct xdp_packet *pkt;
+	struct xdp_vec_ref vec_ip6;
+	struct ethhdr *eth;
+	struct iphdr *ip;
+	uint32_t check;
+	struct sr_cache_table	*sr_table;
+	struct sr_cache		*sr_cache;
+	uint8_t			sr_arg;
+	unsigned int		cache_len;
+	int i;
+
+	port = &plane->ports[port_idx];
+	sr_table = &sr_cache_table[port->bound_table_idx];
+	vec_ip6.num = 0;
+
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
+
+		if(xdp_pkt_rest(pkt) < sizeof(struct iphdr))
+			continue;
+
+		ip = (struct iphdr *)pkt->current;
+		pkt->layer3 = ip;
+		pkt->current = ip + 1;
+
+		if(ip->ttl == 1){
+			/* XXX: Inject to kernel */
+			continue;
+		}
+
+		ip->ttl--;
+
+		check = ip->check;
+		check += htons(0x0100);
+		ip->check = check + ((check >= 0xFFFF) ? 1 : 0);
+
+		sr_arg = ip->tos;
+
+		sr_cache = &sr_table->cache4[sr_arg];
+		pthread_rwlock_rdlock(&sr_cache->lock);
+		cache_len = sr_cache->size;
+
+		if(!cache_len){
+			pthread_rwlock_unlock(&sr_cache->lock);
+			continue;
+		}
+
+		/* XXX: Size should be compared with outgoing port's MTU */
+		if(pkt->slot_size + cache_len > port->mtu_frame){
+			pthread_rwlock_unlock(&sr_cache->lock);
+			continue;
+		}
+
+		memcpy(pkt->layer3 + cache_len, pkt->layer3,
+			pkt->slot_size - (pkt->layer3 - pkt->layer2));
+		memcpy(pkt->layer3, sr_cache->buf, cache_len);
+		pthread_rwlock_unlock(&sr_cache->lock);
+
+		pkt->slot_size += cache_len;
+
+		ip = (struct iphdr *)(pkt->layer3 + cache_len);
+		pkt->current = ip + 1;
+
+		ip->check = xdp_ip_check_inc(ip->check, ip->tos, 0);
+		ip->tos = 0;
+
+		eth = (struct ethhdr *)pkt->layer2;
+		/* XXX:
+		 * ideally, dst port(src mac)/dst mac of inner->outer direction
+		 * should be determined by FIB lookup
+		 */
+		memcpy(eth->h_dest, port->bound_mac_addr, ETH_ALEN);
+		dst_port = &plane->ports[port->bound_port_idx];
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+		eth->h_proto = htons(ETH_P_IPV6);
+
+		pkt->out = port->bound_port_idx;
+
+		pkt->current = pkt->layer3;
+		pkt->nexthdr = 0;
+		vec_ip6.packets[vec_ip6.num++] = pkt;
+	}
+
+	if(vec_ip6.num)
+		forward_ip6(plane, port_idx, &vec_ip6);
+	return;
+}
+
+static void forward_endac6_in(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port, *dst_port;
+	struct xdp_packet *pkt;
+	struct xdp_vec_ref vec_ip6;
+	struct ethhdr *eth;
+	struct ip6_hdr *ip6;
+	struct sr_cache_table	*sr_table;
+	struct sr_cache		*sr_cache;
+	uint8_t			sr_arg;
+	unsigned int		cache_len;
+	int i;
+
+	port = &plane->ports[port_idx];
+	sr_table = &sr_cache_table[port->bound_table_idx];
+	vec_ip6.num = 0;
+
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
+
+		if(xdp_pkt_rest(pkt) < sizeof(struct ip6_hdr))
+			continue;
+
+		ip6 = (struct ip6_hdr *)pkt->current;
+		pkt->layer3 = ip6;
+		pkt->current = ip6 + 1;
+
+		if(ip6->ip6_hlim == 1){
+			/* XXX: Inject to kernel */
+			continue;
+		}
+
+		ip6->ip6_hlim--;
+
+		sr_arg = ((uint8_t *)&ip6->ip6_flow)[3];
+
+		sr_cache = &sr_table->cache6[sr_arg];
+		pthread_rwlock_rdlock(&sr_cache->lock);
+		cache_len = sr_cache->size;
+
+		if(!cache_len){
+			pthread_rwlock_unlock(&sr_cache->lock);
+			continue;
+		}
+
+		/* XXX: Size should be compared with outgoing port's MTU */
+		if(pkt->slot_size + cache_len > port->mtu_frame){
+			pthread_rwlock_unlock(&sr_cache->lock);
+			continue;
+		}
+
+		memcpy(pkt->layer3 + cache_len, pkt->layer3,
+			pkt->slot_size - (pkt->layer3 - pkt->layer2));
+		memcpy(pkt->layer3, sr_cache->buf, cache_len);
+		pthread_rwlock_unlock(&sr_cache->lock);
+
+		pkt->slot_size += cache_len;
+
+		ip6 = (struct ip6_hdr *)(pkt->layer3 + cache_len);
+		pkt->current = ip6 + 1;
+
+		((uint8_t *)&ip6->ip6_flow)[3] = 0;
+
+		eth = (struct ethhdr *)pkt->layer2;
+		/* XXX:
+		 * ideally, dst port(src mac)/dst mac of inner->outer direction
+		 * should be determined by FIB lookup
+		 */
+		memcpy(eth->h_dest, port->bound_mac_addr, ETH_ALEN);
+		dst_port = &plane->ports[port->bound_port_idx];
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+		eth->h_proto = htons(ETH_P_IPV6);
+
+		pkt->out = port->bound_port_idx;
+
+		pkt->current = pkt->layer3;
+		pkt->nexthdr = 0;
+		vec_ip6.packets[vec_ip6.num++] = pkt;
+	}
+
+	if(vec_ip6.num)
+		forward_ip6(plane, port_idx, &vec_ip6);
+	return;
+}
+
+static void forward_endac4_out(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
+{
+	struct xdp_port *port, *dst_port;
+	struct xdp_packet *pkt;
+	struct ethhdr *eth;
+	struct ip6_hdr *ip6;
+	struct iphdr *ip;
 	struct sr_cache_table	*sr_table;
 	struct sr_cache		*sr_cache;
 	struct sr_sid		*sr_sid;
 	uint8_t			sr_arg;
-	unsigned int		len, cache_len;
-	int			ret, err;
+	struct xdp_packet	*sr_cache_pkt[256] = {};
+	unsigned int		cache_len;
+	int i;
 
-printf("forward_srv6_outer\n");
-	port = &thread->plane->ports[port_index];
-	len = packet->slot_size;
-
-	if(!(port->mode & SRV6_END_AC_MODE_OUTER))
-		goto packet_drop;
-
-	if(len < sizeof(struct ethhdr))
-		goto packet_drop;
-	len -= sizeof(struct ethhdr);
-	eth = (struct ethhdr *)packet->slot_buf;
-
-	forward_endac_eth(eth,
-		port->bound_mac_addr, port->mac_addr, ETH_P_IP);
-
-	if(len < sizeof(struct ip6_hdr))
-		goto packet_drop;
-	len -= sizeof(struct ip6_hdr);
-	ip6 = (struct ip6_hdr *)(eth + 1);
-
-	err = forward_endac_ip6(ip6);
-	if(err < 0)
-		goto packet_drop;
-
-	if(ip6->ip6_nxt != IPPROTO_SRV6)
-		goto packet_drop;
-
+	port = &plane->ports[port_idx];
 	sr_table = &sr_cache_table[port->bound_table_idx];
-
 	sr_sid = &sr_table->sid;
-	if(memcmp(&ip6->ip6_dst, sr_sid->sid, sr_sid->len))
-		goto packet_drop;
 
-	sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
-	sr_cache = &sr_table->cache[sr_arg];
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-	if(len < sizeof(struct ipv6_sr_hdr))
-		goto packet_drop;
-	len -= sizeof(struct ipv6_sr_hdr);
-	srv6 = (struct ipv6_sr_hdr *)(ip6 + 1);
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
+		sr_cache_pkt[sr_arg] = pkt;
+	}
 
-	if(len < (srv6->hdrlen * 8))
-		goto packet_drop;
-	len -= (srv6->hdrlen * 8);
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-	err = forward_endac_srv6(ip6, srv6);
-	if(err < 0)
-		goto packet_drop;
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
+		cache_len = pkt->current - pkt->layer3;
 
-	cache_len = sizeof(struct ip6_hdr)
-		+ sizeof(struct ipv6_sr_hdr) + (srv6->hdrlen * 8);
+		if(sr_cache_pkt[sr_arg] == pkt){
+			sr_cache = &sr_table->cache4[sr_arg];
 
-	pthread_rwlock_wrlock(&sr_cache->lock);
-	memcpy(sr_cache->buf, (uint8_t *)(eth + 1), cache_len);
-	sr_cache->size = cache_len;
-	pthread_rwlock_unlock(&sr_cache->lock);
-	memcpy((uint8_t *)(eth + 1), (uint8_t *)(eth + 1) + cache_len, len);
+			pthread_rwlock_wrlock(&sr_cache->lock);
+			memcpy(sr_cache->buf, pkt->layer3, cache_len);
+			sr_cache->size = cache_len;
+			pthread_rwlock_unlock(&sr_cache->lock);
+		}
 
-	if(len < sizeof(struct iphdr))
-		goto packet_drop;
-	len -= sizeof(struct iphdr);
-	ip = (struct iphdr *)(eth + 1);
+		memcpy(pkt->layer3, pkt->current, xdp_pkt_rest(pkt));
+		pkt->slot_size -= cache_len;
+		pkt->current = pkt->layer3;
 
-	err = forward_endac_ip(ip, sr_arg);
-	if(err < 0)
-		goto packet_drop;
+		if(xdp_pkt_rest(pkt) < sizeof(struct iphdr))
+			continue;
 
-	packet->slot_size -= cache_len;
-	ret = port->bound_port_idx;
-	return ret;
+		ip = (struct iphdr *)pkt->current;
+		pkt->current = ip + 1;
 
-packet_drop:
-	return -1;
+		ip->check = xdp_ip_check_inc(ip->check, ip->tos, sr_arg);
+		ip->tos = sr_arg;
+
+		eth = (struct ethhdr *)pkt->layer2;
+		memcpy(eth->h_dest, port->bound_mac_addr, ETH_ALEN);
+		dst_port = &plane->ports[port->bound_port_idx];
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+		eth->h_proto = htons(ETH_P_IP);
+
+		pkt->out = port->bound_port_idx;
+
+		pkt->nexthdr = ip->protocol;
+	}
+
+	return;
 }
 
-#else
-static int forward_ip_process(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet)
+static void forward_endac6_out(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_vec_ref *vec)
 {
-	struct xdp_port		*port;
-	struct ethhdr		*eth;
-	struct iphdr		*ip;
-	void			*dst_mac, *src_mac;
-	uint32_t		check;
-	int			ret;
+	struct xdp_port *port, *dst_port;
+	struct xdp_packet *pkt;
+	struct ethhdr *eth;
+	struct ip6_hdr *ip6;
+	struct sr_cache_table	*sr_table;
+	struct sr_cache		*sr_cache;
+	struct sr_sid		*sr_sid;
+	uint8_t			sr_arg;
+	struct xdp_packet	*sr_cache_pkt[256] = {};
+	unsigned int		cache_len;
+	int i;
 
-	port = &thread->plane->ports[port_index];
-	eth = (struct ethhdr *)packet->slot_buf;
-	ip = (struct iphdr *)(eth + 1);
+	port = &plane->ports[port_idx];
+	sr_table = &sr_cache_table[port->bound_table_idx];
+	sr_sid = &sr_table->sid;
 
-	if(unlikely(ip->ttl == 1))
-		goto packet_drop;
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-	ip->ttl--;
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
+		sr_cache_pkt[sr_arg] = pkt;
+	}
 
-	check = ip->check;
-	check += htons(0x0100);
-	ip->check = check + ((check >= 0xFFFF) ? 1 : 0);
+	for(i = 0; i < vec->num; i++){
+		pkt = vec->packets[i];
 
-	dst_mac = neigh_entry->dst_mac;
-	src_mac = port->mac_addr;
-	memcpy(eth->h_dest, dst_mac, ETH_ALEN);
-	memcpy(eth->h_source, src_mac, ETH_ALEN);
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		sr_arg = ip6->ip6_dst.s6_addr[sr_sid->arg_offset];
+		cache_len = pkt->current - pkt->layer3;
 
-	ret = fib_entry->port_index;
-	return ret;
+		if(sr_cache_pkt[sr_arg] == pkt){
+			sr_cache = &sr_table->cache6[sr_arg];
 
-packet_drop:
-	return -1;
+			pthread_rwlock_wrlock(&sr_cache->lock);
+			memcpy(sr_cache->buf, pkt->layer3, cache_len);
+			sr_cache->size = cache_len;
+			pthread_rwlock_unlock(&sr_cache->lock);
+		}
+
+		memcpy(pkt->layer3, pkt->current, xdp_pkt_rest(pkt));
+		pkt->slot_size -= cache_len;
+		pkt->current = pkt->layer3;
+
+		if(xdp_pkt_rest(pkt) < sizeof(struct ip6_hdr))
+			continue;
+
+		ip6 = (struct ip6_hdr *)pkt->current;
+		pkt->current = ip6 + 1;
+
+		((uint8_t *)&ip6->ip6_flow)[3] = sr_arg;
+
+		eth = (struct ethhdr *)pkt->layer2;
+		memcpy(eth->h_dest, port->bound_mac_addr, ETH_ALEN);
+		dst_port = &plane->ports[port->bound_port_idx];
+		memcpy(eth->h_source, dst_port->mac_addr, ETH_ALEN);
+		eth->h_proto = htons(ETH_P_IP);
+
+		pkt->out = port->bound_port_idx;
+
+		pkt->nexthdr = ip6->ip6_nxt;
+	}
+
+	return;
 }
 
-static int forward_ip6_process(struct xdpd_thread *thread,
-	unsigned int port_index, struct xdp_packet *packet)
-{
-	struct xdp_port		*port;
-	struct ethhdr		*eth;
-	struct ip6_hdr		*ip6;
-	void			*dst_mac, *src_mac;
-	int			ret;
-
-	port = &thread->plane->ports[port_index];
-	eth = (struct ethhdr *)packet->slot_buf;
-	ip6 = (struct ip6_hdr *)(eth + 1);
-
-	if(unlikely(ip6->ip6_hlim == 1))
-		goto packet_drop;
-
-	ip6->ip6_hlim--;
-
-	dst_mac = neigh_entry->dst_mac;
-	src_mac = port->mac_addr;
-	memcpy(eth->h_dest, dst_mac, ETH_ALEN);
-	memcpy(eth->h_source, src_mac, ETH_ALEN);
-
-	ret = fib_entry->port_index;
-	return ret;
-
-packet_drop:
-	return -1;
-}
 #endif
