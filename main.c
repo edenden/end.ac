@@ -16,6 +16,11 @@
 #include <stdarg.h>
 #include <syslog.h>
 
+#include <linux/if_link.h>
+#include <linux/if_xdp.h>
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+
 #include "main.h"
 #include "lib.h"
 #include "thread.h"
@@ -54,6 +59,8 @@ static void usage()
 	printf("  -n [n] : NUMA node (default=0)\n");
 	printf("  -m [n] : MTU length (default=1522)\n");
 	printf("  -b [n] : Number of packet buffer per port(default=8192)\n");
+	printf("  -d : Force XDP Driver mode\n");
+	printf("  -z : Force XDP Zero copy mode\n");
 	printf("  -h : Show this help\n");
 #ifdef SRV6_END_AC
 	printf("  -s [v6in-ifidx],[v4out-ifidx],[v4in-ifidx],[v6out-ifidx],[v4out-dmac],[v6out-dmac],[sid],[sidlen],[argoffset]\n");
@@ -86,6 +93,9 @@ int main(int argc, char **argv)
 	xdpd.buf_size		= 2048;
 	/* number of per port packet buffer */
 	xdpd.buf_count		= 8192;
+
+	xdpd.xdp_flags		= XDP_FLAGS_SKB_MODE;
+	xdpd.xdp_bind_flags	= XDP_COPY;
 
 	ret = -1;
 
@@ -175,7 +185,8 @@ err_alloc_ifnames:
 static int xdpd_device_init(struct xdpd *xdpd, int dev_idx)
 {
 	xdpd->devs[dev_idx] = xdp_open(xdpd->ifnames[dev_idx],
-		xdpd->num_threads, xdpd->buf_size, xdpd->mtu_frame);
+		xdpd->num_threads, xdpd->buf_size, xdpd->mtu_frame,
+		xdpd->xdp_flags);
 	if(!xdpd->devs[dev_idx]){
 		xdpd_log(LOG_ERR, "failed to xdp_open, idx = %d", dev_idx);
 		goto err_open;
@@ -189,7 +200,7 @@ err_open:
 
 static void xdpd_device_destroy(struct xdpd *xdpd, int dev_idx)
 {
-	xdp_close(xdpd->devs[dev_idx]);
+	xdp_close(xdpd->devs[dev_idx], xdpd->xdp_flags);
 }
 
 static int xdpd_thread_create(struct xdpd *xdpd,
@@ -211,7 +222,8 @@ static int xdpd_thread_create(struct xdpd *xdpd,
 	}
 
 	thread->plane = xdp_plane_alloc(xdpd->devs, xdpd->num_devices,
-		thread->buf, thread->id, xdpd->cores[thread->id]);
+		thread->buf, thread->id, xdpd->cores[thread->id],
+		xdpd->xdp_bind_flags);
 	if(!thread->plane){
 		xdpd_log(LOG_ERR,
 			"failed to xdp_plane_alloc, idx = %d", thread->id);
@@ -346,9 +358,9 @@ static int xdpd_parse_args(struct xdpd *xdpd, int argc, char **argv)
 #endif
 
 #ifdef SRV6_END_AC
-	while((opt = getopt(argc, argv, "c:p:n:m:b:s:ah")) != -1){
+	while((opt = getopt(argc, argv, "c:p:n:m:b:s:dzh")) != -1){
 #else
-	while((opt = getopt(argc, argv, "c:p:n:m:b:ah")) != -1){
+	while((opt = getopt(argc, argv, "c:p:n:m:b:dzh")) != -1){
 #endif
 		switch(opt){
 		case 'c':
@@ -401,6 +413,12 @@ static int xdpd_parse_args(struct xdpd *xdpd, int argc, char **argv)
 				printf("Invalid number of packet buffer\n");
 				goto err_arg;
 			}
+			break;
+		case 'd':
+			xdpd->xdp_flags |= XDP_FLAGS_DRV_MODE;
+			break;
+		case 'z':
+			xdpd->xdp_bind_flags |= XDP_ZEROCOPY;
 			break;
 		case 'h':
 			usage();

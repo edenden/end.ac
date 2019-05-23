@@ -14,7 +14,7 @@
 #include <pthread.h>
 #endif
 
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
 #define xdp_print(args...) printf("xdp: " args)
 #else
@@ -197,6 +197,8 @@ struct xdpd {
 	unsigned int		buf_size;
 	unsigned int		buf_count;
 	unsigned int		numa_node;
+	unsigned int		xdp_flags;
+	unsigned int		xdp_bind_flags;
 };
 
 void xdpd_log(int level, char *fmt, ...);

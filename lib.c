@@ -22,7 +22,8 @@
 #include "lib.h"
 
 static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
-	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx);
+	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx,
+	unsigned int xdp_bind_flags);
 static void xdp_release_port(struct xdp_port *port);
 static int xdp_alloc_ring(int fd, struct xdp_ring *ring,
 	unsigned long size_desc, int num_desc, off_t mmap_offset, int sock_flag,
@@ -34,7 +35,8 @@ static int xdp_configure_srv6(struct xdp_port *port);
 #endif
 
 struct xdp_plane *xdp_plane_alloc(struct xdp_dev **devs, int num_devs,
-	struct xdp_buf *buf, unsigned int thread_id, unsigned int core_id)
+	struct xdp_buf *buf, unsigned int thread_id, unsigned int core_id,
+	unsigned int xdp_bind_flags)
 {
 	struct xdp_plane *plane;
 	int port_done, i, err;
@@ -49,7 +51,8 @@ struct xdp_plane *xdp_plane_alloc(struct xdp_dev **devs, int num_devs,
 		goto err_alloc_ports;
 
 	for(i = 0, port_done = 0; i < num_devs; i++, port_done++){
-		err = xdp_alloc_port(devs, plane, buf, thread_id, i);
+		err = xdp_alloc_port(devs, plane, buf, thread_id, i,
+			xdp_bind_flags);
 		if(err < 0)
 			goto err_alloc_port;
 
@@ -143,7 +146,8 @@ err_configure_srv6:
 #endif
 
 static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
-	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx)
+	struct xdp_buf *buf, unsigned int thread_id, unsigned int dev_idx,
+	unsigned int xdp_bind_flags)
 {
 	struct xdp_dev *dev;
 	struct xdp_port *port;
@@ -227,10 +231,7 @@ static int xdp_alloc_port(struct xdp_dev **devs, struct xdp_plane *plane,
 	sxdp.sxdp_family = PF_XDP;
 	sxdp.sxdp_ifindex = dev->ifindex;
 	sxdp.sxdp_queue_id = thread_id;
-
-	/* XXX: OPTION-ize XDP mode */
-//	sxdp.sxdp_flags = XDP_ZEROCOPY;
-	sxdp.sxdp_flags = XDP_COPY;
+	sxdp.sxdp_flags = xdp_bind_flags;
 
 	err = bind(port->xfd, (struct sockaddr *)&sxdp, sizeof(sxdp));
 	if(err < 0)
@@ -368,7 +369,8 @@ void xdp_release_buf(struct xdp_buf *buf)
 }
 
 struct xdp_dev *xdp_open(const char *name,
-	unsigned int num_qps, unsigned int buf_size, unsigned int mtu_frame)
+	unsigned int num_qps, unsigned int buf_size, unsigned int mtu_frame,
+	unsigned int xdp_flags)
 {
 	struct xdp_dev *dev;
 	struct bpf_object *obj;
@@ -414,9 +416,7 @@ struct xdp_dev *xdp_open(const char *name,
 	if (dev->xsks_map < 0)
 		goto err_bpf_map_fd;
 
-	/* XXX: OPTION-ize XDP mode */
-//	err = bpf_set_link_xdp_fd(dev->ifindex, prog_fd, XDP_FLAGS_DRV_MODE);
-	err = bpf_set_link_xdp_fd(dev->ifindex, prog_fd, XDP_FLAGS_SKB_MODE);
+	err = bpf_set_link_xdp_fd(dev->ifindex, prog_fd, xdp_flags);
 	if(err < 0)
 		goto err_bpf_set_link;
 
@@ -435,11 +435,9 @@ err_alloc_dev:
 	return NULL;
 }
 
-void xdp_close(struct xdp_dev *dev)
+void xdp_close(struct xdp_dev *dev, unsigned int xdp_flags)
 {
-	/* XXX: OPTION-ize XDP mode */
-//	bpf_set_link_xdp_fd(dev->ifindex, -1, XDP_FLAGS_DRV_MODE);
-	bpf_set_link_xdp_fd(dev->ifindex, -1, XDP_FLAGS_SKB_MODE);
+	bpf_set_link_xdp_fd(dev->ifindex, -1, xdp_flags);
 	free(dev);
 	return;
 }
