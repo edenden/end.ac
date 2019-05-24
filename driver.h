@@ -27,7 +27,6 @@ void xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);
 void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf);
-void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx);
 int xdp_slot_assign(struct xdp_buf *buf,
 	struct xdp_plane *plane, unsigned int port_idx);
 void xdp_slot_release(struct xdp_buf *buf,

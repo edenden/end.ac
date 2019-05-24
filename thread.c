@@ -29,9 +29,7 @@ static int thread_fd_prepare(struct list_head *ep_desc_head,
 static void thread_fd_destroy(struct list_head *ep_desc_head,
 	int fd_ep);
 static int thread_wait(struct xdpd_thread *thread, int fd_ep);
-static inline int thread_process_xdp_in(struct xdpd_thread *thread,
-	struct epoll_desc *ep_desc);
-static inline int thread_process_xdp_out(struct xdpd_thread *thread,
+static inline int thread_process_xdp(struct xdpd_thread *thread,
 	struct epoll_desc *ep_desc);
 static inline int thread_process_signal(struct xdpd_thread *thread,
 	struct epoll_desc *ep_desc);
@@ -92,8 +90,7 @@ static int thread_fd_prepare(struct list_head *ep_desc_head,
 
 		list_add_last(ep_desc_head, &ep_desc->list);
 
-		ret = epoll_add(fd_ep, ep_desc->fd, ep_desc,
-			EPOLLIN | EPOLLOUT);
+		ret = epoll_add(fd_ep, ep_desc->fd, ep_desc, EPOLLIN);
 		if(ret < 0){
 			perror("failed to add fd in epoll");
 			goto err_assign_port;
@@ -154,7 +151,6 @@ static int thread_wait(struct xdpd_thread *thread, int fd_ep)
 {
         struct epoll_desc *ep_desc;
         struct epoll_event events[EPOLL_MAXEVENTS];
-	uint32_t ep_events;
         int i, err, num_fd;
 
 	while(1){
@@ -164,22 +160,12 @@ static int thread_wait(struct xdpd_thread *thread, int fd_ep)
 
 		for(i = 0; i < num_fd; i++){
 			ep_desc = (struct epoll_desc *)events[i].data.ptr;
-			ep_events = events[i].events;
 
 			switch(ep_desc->type){
 			case EPOLL_XDP:
-				if(ep_events & EPOLLIN){
-					err = thread_process_xdp_in(thread,
-						ep_desc);
-					if(err < 0)
-						goto err_process;
-				}
-				if(ep_events & EPOLLOUT){
-					err = thread_process_xdp_out(thread,
-						ep_desc);
-					if(err < 0)
-						goto err_process;
-				}
+				err = thread_process_xdp(thread, ep_desc);
+				if(err < 0)
+					goto err_process;
 				break;
 			case EPOLL_SIGNAL:
 				err = thread_process_signal(thread, ep_desc);
@@ -201,7 +187,7 @@ err_wait:
 	return -1;
 }
 
-static inline int thread_process_xdp_in(struct xdpd_thread *thread,
+static inline int thread_process_xdp(struct xdpd_thread *thread,
 	struct epoll_desc *ep_desc)
 {
 	int i;
@@ -215,23 +201,16 @@ static inline int thread_process_xdp_in(struct xdpd_thread *thread,
 		xdp_tx_fill(thread->plane, i, thread->buf);
 	}
 
-	return 0;
-}
-
-static inline int thread_process_xdp_out(struct xdpd_thread *thread,
-	struct epoll_desc *ep_desc)
-{
-	/* XXX: EPOLLOUT consumes CPU 100%. Any solution? */
-	xdp_tx_kick(thread->plane, ep_desc->port_index);
-
 	/* Umem queues */
 	/* XXX: To be revised
 	 * FQ-empty/CQ-full notification feature will be introduced
 	 * in the future. It will make followings unnecessary.
 	 * Ref: https://www.spinics.net/lists/netdev/msg556499.html
 	 */
-	xdp_tx_pull(thread->plane, ep_desc->port_index, thread->buf);
-	xdp_rx_fill(thread->plane, ep_desc->port_index, thread->buf);
+	for(i = 0; i < thread->plane->num_ports; i++){
+		xdp_tx_pull(thread->plane, i, thread->buf);
+		xdp_rx_fill(thread->plane, i, thread->buf);
+	}
 
 	return 0;
 }

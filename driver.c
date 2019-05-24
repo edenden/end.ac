@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <sys/signalfd.h>
 #include <pthread.h>
+#include <syslog.h>
 
 #include <linux/if_link.h>
 #include <linux/if_xdp.h>
@@ -25,6 +26,8 @@ static inline void *xdp_slot_addr_virt(struct xdp_buf *buf,
 	unsigned int slot_index);
 static inline unsigned int xdp_slot_index(struct xdp_buf *buf,
 	uint64_t addr_rel);
+static void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_buf *buf);
 
 void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_buf *buf)
@@ -119,6 +122,9 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 		wmb();
 		*tx_ring->producer = desc_idx;
 	}
+
+	if(vec->num)
+		xdp_tx_kick(plane, port_idx, buf);
 
 	vec->num = 0;
 	xdp_print("Tx-fill: port_idx = %d, total_fill = %d, prod = %d, cons = %d\n",
@@ -222,16 +228,33 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	return;
 }
 
-void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx)
+static void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx,
+	struct xdp_buf *buf)
 {
 	struct xdp_port *port;
 	int err;
 
 	port = &plane->ports[port_idx];
 
-	err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
-	if (err < 0)
-		xdp_print("Tx: packet sending error = %d\n", errno);
+	/* Reference: kick_tx() of DPDK's rte_eth_af_xdp.c */
+	while(1){
+		err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
+		if(err >= 0) /* everything is ok */
+			break;
+
+		/* some thing unexpected */
+		if(errno != EBUSY && errno != EAGAIN && errno != EINTR){
+			xdpd_log(LOG_INFO,
+				"Tx: packet sending error = %d\n", errno);
+			break;
+		}
+
+		/* pull from completion queue to leave more space */
+		if(errno == EAGAIN) {
+			xdp_tx_pull(plane, port_idx, buf);
+		}
+	}
+	return;
 }
 
 int xdp_slot_assign(struct xdp_buf *buf,
