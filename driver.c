@@ -51,7 +51,7 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 			break;
 
 		slot_index = xdp_slot_assign(buf, plane, port_idx);
-		if(unlikely(slot_index < 0)){
+		if(slot_index < 0){
 			port->count_rx_alloc_failed++;
 			break;
 		}
@@ -69,6 +69,8 @@ void xdp_rx_fill(struct xdp_plane *plane, unsigned int port_idx,
 		*fq_ring->producer = desc_idx;
 	}
 
+	xdp_print("Rx-fill: port_idx = %d, total_fill = %d, prod = %d, cons = %d\n",
+		port_idx, total_fill, *fq_ring->producer, *fq_ring->consumer);
 	return;
 }
 
@@ -82,7 +84,7 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 	uint32_t cons;
 	unsigned int total_fill;
 	struct xdp_desc *desc;
-	int i, err;
+	int i;
 
 	port = &plane->ports[port_idx];
 	vec = &port->vec_tx;
@@ -90,18 +92,13 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 
 	desc_idx = *tx_ring->producer;
 	total_fill = 0;
-	i = 0;
 
 	cons = *tx_ring->consumer;
 
-	while(i++ < vec->num){
+	while(total_fill < vec->num){
 		if(((desc_idx + 1) & (XDPD_TX_DESC - 1))
-			== (cons & (XDPD_TX_DESC - 1))){
-			port->count_tx_xmit_failed++;
-			xdp_slot_release(buf,
-				vec->packets[total_fill]->slot_index);
-			continue;
-		}
+			== (cons & (XDPD_TX_DESC - 1)))
+			break;
 
 		next_to_use = desc_idx & (XDPD_TX_DESC - 1);
 		desc = &((struct xdp_desc *)tx_ring->descs)[next_to_use];
@@ -109,27 +106,23 @@ void xdp_tx_fill(struct xdp_plane *plane, unsigned int port_idx,
 			vec->packets[total_fill]->slot_index);
 		desc->len = vec->packets[total_fill]->slot_size;
 
-		xdp_print("Tx: addr = %p size = %d port_idx = %d\n",
-			(void *)desc->addr, desc->len, port_idx);
-
 		desc_idx++;
 		total_fill++;
+	}
+
+	for(i = total_fill; i < vec->num; i++){
+		port->count_tx_xmit_failed++;
+		xdp_slot_release(buf, vec->packets[i]->slot_index);
 	}
 
 	if(total_fill){
 		wmb();
 		*tx_ring->producer = desc_idx;
-
-		err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
-		if (err < 0){
-			xdp_print("Tx: packet sending error = %d\n", err);
-			return;
-		}
-
-		xdp_tx_pull(plane, port_idx, buf);
 	}
 
 	vec->num = 0;
+	xdp_print("Tx-fill: port_idx = %d, total_fill = %d, prod = %d, cons = %d\n",
+		port_idx, total_fill, *tx_ring->producer, *tx_ring->consumer);
 	return;
 }
 
@@ -169,22 +162,18 @@ void xdp_rx_pull(struct xdp_plane *plane, unsigned int port_idx,
 		vec->packets[total_pull].slot_size = desc->len;
 		vec->packets[total_pull].slot_index = slot_index;
 
-		xdp_print("Rx: packet received slot = %d, size = %d\n",
-			vec->packets[total_pull].slot_index,
-			vec->packets[total_pull].slot_size);
-
 		desc_idx++;
 		total_pull++;
 	}
 
 	if(total_pull){
 		*rx_ring->consumer = desc_idx;
-
-		xdp_rx_fill(plane, port_idx, buf);
 	}
 
 	port->count_rx_clean_total += total_pull;
 	vec->num = total_pull;
+	xdp_print("Rx-pull: port_idx = %d, total_pull = %d, prod = %d, cons = %d\n",
+		port_idx, total_pull, *rx_ring->producer, *rx_ring->consumer);
 	return;
 }
 
@@ -228,7 +217,42 @@ void xdp_tx_pull(struct xdp_plane *plane, unsigned int port_idx,
 	}
 
 	port->count_tx_clean_total += total_pull;
+	xdp_print("Tx-pull: port_idx = %d, total_pull = %d, prod = %d, cons = %d\n",
+		port_idx, total_pull, *cq_ring->producer, *cq_ring->consumer);
 	return;
+}
+
+void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx)
+{
+	struct xdp_port *port;
+	int err;
+
+	port = &plane->ports[port_idx];
+
+	err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
+	if (err < 0){
+		xdp_print("Tx: packet sending error = %d\n", errno);
+
+/*
+printf("This is port %d Tx sending error = %d\n", port_idx, errno);
+printf("statistics dump:\n");
+int i;
+for(i = 0; i < plane->num_ports; i++){
+struct xdp_port *dump_port;
+dump_port = &plane->ports[i];
+printf("port[%d] rx prod = %d, cons = %d\n", i,
+	*(dump_port->rx_ring.producer), *(dump_port->rx_ring.consumer));
+printf("port[%d] tx prod = %d, cons = %d\n", i,
+	*(dump_port->tx_ring.producer), *(dump_port->tx_ring.consumer));
+printf("port[%d] fq prod = %d, cons = %d\n", i,
+	*(dump_port->fq_ring.producer), *(dump_port->fq_ring.consumer));
+printf("port[%d] cq prod = %d, cons = %d\n", i,
+	*(dump_port->cq_ring.producer), *(dump_port->cq_ring.consumer));
+}
+*/
+
+	}
+
 }
 
 int xdp_slot_assign(struct xdp_buf *buf,

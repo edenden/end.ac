@@ -10,13 +10,13 @@
 #include "main.h"
 #include "epoll.h"
 
-int epoll_add(int fd_ep, void *ptr, int fd)
+int epoll_add(int fd_ep, int fd, void *ptr, uint32_t events)
 {
 	struct epoll_event event;
 	int ret;
 
 	memset(&event, 0, sizeof(struct epoll_event));
-	event.events = EPOLLIN;
+	event.events = events;
 	event.data.ptr = ptr;
 	ret = epoll_ctl(fd_ep, EPOLL_CTL_ADD, fd, &event);
 	if(ret < 0)
@@ -36,7 +36,7 @@ int epoll_del(int fd_ep, int fd)
 	return 0;
 }
 
-struct epoll_desc *epoll_desc_alloc_irq(struct xdp_plane *plane,
+struct epoll_desc *epoll_desc_alloc_xdp(struct xdp_plane *plane,
 	unsigned int port_index)
 {
 	struct epoll_desc *ep_desc;
@@ -46,7 +46,7 @@ struct epoll_desc *epoll_desc_alloc_irq(struct xdp_plane *plane,
 		goto err_alloc_ep_desc;
 
 	ep_desc->fd		= plane->ports[port_index].xfd;
-	ep_desc->type		= EPOLL_IRQ;
+	ep_desc->type		= EPOLL_XDP;
 	ep_desc->port_index	= port_index;
 
 	return ep_desc;
@@ -55,7 +55,7 @@ err_alloc_ep_desc:
 	return NULL;
 }
 
-void epoll_desc_release_irq(struct epoll_desc *ep_desc)
+void epoll_desc_release_xdp(struct epoll_desc *ep_desc)
 {
 	free(ep_desc);
 	return;
