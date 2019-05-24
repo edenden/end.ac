@@ -236,7 +236,12 @@ static void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx,
 
 	port = &plane->ports[port_idx];
 
-	/* Reference: kick_tx() of DPDK's rte_eth_af_xdp.c */
+	/*
+	 * Reference: kick_tx() of DPDK's rte_eth_af_xdp.c
+	 * Does this while-loop means "waiting until Tx queue become empty"?
+	 * If so, this can't achieve asynchronous I/O against the NIC device,
+	 * which is "ring" data structure's meaning of existence...why?
+	 */
 	while(1){
 		err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
 		if(err >= 0) /* everything is ok */
