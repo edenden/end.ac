@@ -230,29 +230,8 @@ void xdp_tx_kick(struct xdp_plane *plane, unsigned int port_idx)
 	port = &plane->ports[port_idx];
 
 	err = sendto(port->xfd, NULL, 0, MSG_DONTWAIT, NULL, 0);
-	if (err < 0){
+	if (err < 0)
 		xdp_print("Tx: packet sending error = %d\n", errno);
-
-/*
-printf("This is port %d Tx sending error = %d\n", port_idx, errno);
-printf("statistics dump:\n");
-int i;
-for(i = 0; i < plane->num_ports; i++){
-struct xdp_port *dump_port;
-dump_port = &plane->ports[i];
-printf("port[%d] rx prod = %d, cons = %d\n", i,
-	*(dump_port->rx_ring.producer), *(dump_port->rx_ring.consumer));
-printf("port[%d] tx prod = %d, cons = %d\n", i,
-	*(dump_port->tx_ring.producer), *(dump_port->tx_ring.consumer));
-printf("port[%d] fq prod = %d, cons = %d\n", i,
-	*(dump_port->fq_ring.producer), *(dump_port->fq_ring.consumer));
-printf("port[%d] cq prod = %d, cons = %d\n", i,
-	*(dump_port->cq_ring.producer), *(dump_port->cq_ring.consumer));
-}
-*/
-
-	}
-
 }
 
 int xdp_slot_assign(struct xdp_buf *buf,
