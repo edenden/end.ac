@@ -289,8 +289,6 @@ static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_packet *pkt;
 	struct xdp_vec_ref vec_ip6_ext;
 #ifdef SRV6_END_AC
-	struct xdp_vec_ref vec_endac4_out;
-	struct xdp_vec_ref vec_endac6_out;
 	struct sr_cache_table	*sr_table;
 	struct sr_sid		*sr_sid;
 #endif
@@ -303,8 +301,6 @@ static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
 	port = &plane->ports[port_idx];
 	vec_ip6_ext.num = 0;
 #ifdef SRV6_END_AC
-	vec_endac4_out.num = 0;
-	vec_endac6_out.num = 0;
 	sr_table = &sr_cache_table[port->bound_table_idx];
 	sr_sid = &sr_table->sid;
 #endif
@@ -373,16 +369,6 @@ static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
 		case IPPROTO_DSTOPTS:
 			vec_ip6_ext.packets[vec_ip6_ext.num++] = pkt;
 			break;
-#ifdef SRV6_END_AC
-		case IPPROTO_IPIP:
-			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
-				vec_endac4_out.packets[vec_endac4_out.num++] = pkt;
-			break;
-		case IPPROTO_IPV6:
-			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
-				vec_endac6_out.packets[vec_endac6_out.num++] = pkt;
-			break;
-#endif
 		default:
 			break;
 		}
@@ -390,12 +376,6 @@ static void forward_ip6(struct xdp_plane *plane, unsigned int port_idx,
 
 	if(vec_ip6_ext.num)
 		forward_ip6_ext(plane, port_idx, &vec_ip6_ext);
-#ifdef SRV6_END_AC
-	if(vec_endac4_out.num)
-		forward_endac4_out(plane, port_idx, &vec_endac4_out);
-	if(vec_endac6_out.num)
-		forward_endac6_out(plane, port_idx, &vec_endac6_out);
-#endif
 	return;
 }
 
@@ -450,11 +430,13 @@ static void forward_ip6_ext(struct xdp_plane *plane, unsigned int port_idx,
 			break;
 #ifdef SRV6_END_AC
 		case IPPROTO_IPIP:
-			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+			if((pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+			&& (pkt->flag & PACKET_SRV6_UPDATED))
 				vec_endac4_out.packets[vec_endac4_out.num++] = pkt;
 			break;
 		case IPPROTO_IPV6:
-			if(pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+			if((pkt->flag & PACKET_SRV6_ENDAC_MATCH)
+			&& (pkt->flag & PACKET_SRV6_UPDATED))
 				vec_endac6_out.packets[vec_endac6_out.num++] = pkt;
 			break;
 #endif
