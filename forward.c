@@ -411,7 +411,10 @@ static void forward_ip6_ext(struct xdp_plane *plane, unsigned int port_idx,
 		switch(pkt->nexthdr){
 		case IPPROTO_ROUTING:
 			/* Only SRv6 has been implemented for now. */
-			ret = process_ip6_ext_sr(pkt);
+			if(pkt->flag & PACKET_SRV6_MATCH)
+				ret = process_ip6_ext_sr(pkt);
+			else
+				ret = process_ip6_ext_gen(pkt);
 			break;
 		default:
 			ret = process_ip6_ext_gen(pkt);
@@ -481,8 +484,7 @@ static int process_ip6_ext_sr(struct xdp_packet *pkt)
 
 	pkt->current += srv6->hdrlen * 8;
 
-	if((pkt->flag & PACKET_SRV6_MATCH)
-	&& !(pkt->flag & PACKET_SRV6_UPDATED)
+	if(!(pkt->flag & PACKET_SRV6_UPDATED)
 	&& (srv6->segments_left > 0)){
 		ip6 = (struct ip6_hdr *)pkt->layer3;
 
