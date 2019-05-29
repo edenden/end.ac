@@ -1,7 +1,7 @@
 #ifndef XDPSOCK_H_
 #define XDPSOCK_H_
 
-#define DEBUG
+//#define DEBUG
 #ifdef DEBUG
 /* Only use this for debug output. Notice output from bpf_trace_printk()
  * end-up in /sys/kernel/debug/tracing/trace_pipe
