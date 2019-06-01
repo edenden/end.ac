@@ -4,7 +4,7 @@ SRv6 function of multi-tenant proxy by SRH caching over AF_XDP
 ## Usage
 See -h option for latest information.
 ```
-$ sudo LD_LIBRARY_PATH=/usr/local/lib64/ ./main.out -h
+$ sudo ./main.out -h
 
 Usage:
   -c [cpulist] : CPU cores to use
@@ -12,9 +12,11 @@ Usage:
   -n [n] : NUMA node (default=0)
   -m [n] : MTU length (default=1522)
   -b [n] : Number of packet buffer per port(default=8192)
+  -d : Force XDP Driver mode
+  -z : Force XDP Zero copy mode
   -h : Show this help
-  -s : [v6in-ifidx],[v4out-ifidx],[v4in-ifidx],[v6out-ifidx],[v4out-dmac],[v6out-dmac],[sid],[sidlen],[argoffset]
-  -s : 0,1,2,3,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb:bb,fd00::,64,80
+  -s [v6in-ifidx],[v4out-ifidx],[v4in-ifidx],[v6out-ifidx],[v4out-dmac],[v6out-dmac],[sid],[sidlen],[argoffset]
+  -s 0,1,2,3,aa:aa:aa:aa:aa:aa,bb:bb:bb:bb:bb:bb,fd00::,64,80
 ```
 
 ### An example
@@ -34,6 +36,7 @@ $ sudo dpkg -i *.deb
 
 Build & Install libbpf
 ```
+$ sudo apt-get install build-essential
 $ wget https://cdn.kernel.org/pub/linux/kernel/v4.x/linux-4.19.tar.xz
 $ tar -xf linux-4.19.tar.xz
 $ sudo cp ~/linux-4.19/include/uapi/linux/if_xdp.h /usr/include/linux/if_xdp.h
