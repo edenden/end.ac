@@ -476,6 +476,7 @@ static int process_ip6_ext_sr(struct xdp_packet *pkt)
 #ifdef SRV6_PSP
 	struct ip6_ext *ip6_ext;
 	void *layer3_ext_prev;
+	uint16_t sr_len;
 #endif
 	struct in6_addr *sid;
 
@@ -512,16 +513,19 @@ static int process_ip6_ext_sr(struct xdp_packet *pkt)
 			&srv6->segments[srv6->segments_left], 16);
 
 #ifdef SRV6_PSP
+		ip6 = pkt->layer3;
+		sr_len = pkt->current - pkt->layer3_ext;
+		ip6->ip6_plen = htons(ntohs(ip6->ip6_plen) - sr_len);
+
 		if(layer3_ext_prev){
 			ip6_ext = layer3_ext_prev;
 			ip6_ext->ip6e_nxt = pkt->nexthdr;
 		}else{
-			ip6 = pkt->layer3;
 			ip6->ip6_nxt = pkt->nexthdr;
 		}
 
 		memcpy(pkt->layer3_ext, pkt->current, xdp_pkt_rest(pkt));
-		pkt->slot_size -= pkt->current - pkt->layer3_ext;
+		pkt->slot_size -= sr_len;
 		pkt->current = pkt->layer3_ext;
 		pkt->layer3_ext = layer3_ext_prev;
 #endif
