@@ -9,6 +9,7 @@
 #define __ALIGN_MASK(x,mask)	(((x)+(mask))&~(mask))
 
 #define SRV6_END_AC
+#define SRV6_PSP
 
 #ifdef SRV6_END_AC
 #include <pthread.h>
@@ -103,9 +104,8 @@ struct xdp_packet {
 	void			*current;
 	void			*layer2;
 	void			*layer3;
-#ifdef SRV6_END_AC
 	void			*layer3_ext;
-#endif
+	uint8_t			sr_arg;
 	unsigned int		flag;
 	uint8_t			nexthdr;
 };

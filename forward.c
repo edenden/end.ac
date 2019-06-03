@@ -135,6 +135,7 @@ static void forward_start(struct xdp_plane *plane, unsigned int port_idx,
 		pkt->current = pkt->slot_buf;
 		pkt->layer2 = NULL;
 		pkt->layer3 = NULL;
+		pkt->layer3_ext = NULL;
 		pkt->flag = 0;
 		pkt->nexthdr = 0;
 	}
@@ -472,17 +473,28 @@ static int process_ip6_ext_sr(struct xdp_packet *pkt)
 {
 	struct ip6_hdr *ip6;
 	struct ipv6_sr_hdr *srv6;
+#ifdef SRV6_PSP
+	struct ip6_ext *ip6_ext;
+	void *layer3_ext_prev;
+#endif
+	struct in6_addr *sid;
 
 	if(xdp_pkt_rest(pkt) < sizeof(struct ipv6_sr_hdr))
 		goto err;
 
 	srv6 = (struct ipv6_sr_hdr *)pkt->current;
+#ifdef SRV6_PSP
+	layer3_ext_prev = pkt->layer3_ext;
+#endif
+	pkt->layer3_ext = srv6;
 	pkt->current = srv6 + 1;
 
 	if(xdp_pkt_rest(pkt) < srv6->hdrlen * 8)
 		goto err;
 
 	pkt->current += srv6->hdrlen * 8;
+
+	pkt->nexthdr = srv6->nexthdr;
 
 	if(!(pkt->flag & PACKET_SRV6_UPDATED)
 	&& (srv6->segments_left > 0)){
@@ -491,17 +503,32 @@ static int process_ip6_ext_sr(struct xdp_packet *pkt)
 		if(srv6->hdrlen * 8 < srv6->segments_left * 16)
 			goto err;
 
+		sid = &srv6->segments[srv6->segments_left];
+		/* XXX: support variable argument offset */
+		pkt->sr_arg = sid->s6_addr[15];
+
 		srv6->segments_left--;
 		memcpy(&ip6->ip6_dst,
 			&srv6->segments[srv6->segments_left], 16);
 
-#ifdef SRV6_END_AC
-		pkt->layer3_ext = srv6;
+#ifdef SRV6_PSP
+		if(layer3_ext_prev){
+			ip6_ext = layer3_ext_prev;
+			ip6_ext->ip6e_nxt = pkt->nexthdr;
+		}else{
+			ip6 = pkt->layer3;
+			ip6->ip6_nxt = pkt->nexthdr;
+		}
+
+		memcpy(pkt->layer3_ext, pkt->current, xdp_pkt_rest(pkt));
+		pkt->slot_size -= pkt->current - pkt->layer3_ext;
+		pkt->current = pkt->layer3_ext;
+		pkt->layer3_ext = layer3_ext_prev;
 #endif
+
 		pkt->flag |= PACKET_SRV6_UPDATED;
 	}
 
-	pkt->nexthdr = srv6->nexthdr;
 	return 0;
 
 err:
@@ -516,6 +543,7 @@ static int process_ip6_ext_gen(struct xdp_packet *pkt)
 		goto err;
 
 	ip6_ext = (struct ip6_ext *)pkt->current;
+	pkt->layer3_ext = ip6_ext;
 	pkt->current += 8;
 
 	if(xdp_pkt_rest(pkt) < ip6_ext->ip6e_len * 8)
@@ -715,12 +743,9 @@ static void forward_endac4_out(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port, *dst_port;
 	struct xdp_packet *pkt;
 	struct ethhdr *eth;
-	struct ipv6_sr_hdr *srv6;
-	struct in6_addr *sid;
 	struct iphdr *ip;
 	struct sr_cache_table	*sr_table;
 	struct sr_cache		*sr_cache;
-	struct sr_sid		*sr_sid;
 	uint8_t			sr_arg;
 	struct xdp_packet	*sr_cache_pkt[256] = {};
 	unsigned int		cache_len;
@@ -728,25 +753,16 @@ static void forward_endac4_out(struct xdp_plane *plane, unsigned int port_idx,
 
 	port = &plane->ports[port_idx];
 	sr_table = &sr_cache_table[port->bound_table_idx];
-	sr_sid = &sr_table->sid;
 
 	for(i = 0; i < vec->num; i++){
 		pkt = vec->packets[i];
-
-		srv6 = (struct ipv6_sr_hdr *)pkt->layer3_ext;
-		sid = &srv6->segments[srv6->segments_left + 1];
-
-		sr_arg = sid->s6_addr[sr_sid->arg_offset];
-		sr_cache_pkt[sr_arg] = pkt;
+		sr_cache_pkt[pkt->sr_arg] = pkt;
 	}
 
 	for(i = 0; i < vec->num; i++){
 		pkt = vec->packets[i];
 
-		srv6 = (struct ipv6_sr_hdr *)pkt->layer3_ext;
-		sid = &srv6->segments[srv6->segments_left + 1];
-
-		sr_arg = sid->s6_addr[sr_sid->arg_offset];
+		sr_arg = pkt->sr_arg;
 		cache_len = pkt->current - pkt->layer3;
 
 		if(sr_cache_pkt[sr_arg] == pkt){
@@ -791,12 +807,9 @@ static void forward_endac6_out(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_port *port, *dst_port;
 	struct xdp_packet *pkt;
 	struct ethhdr *eth;
-	struct ipv6_sr_hdr *srv6;
-	struct in6_addr *sid;
 	struct ip6_hdr *ip6;
 	struct sr_cache_table	*sr_table;
 	struct sr_cache		*sr_cache;
-	struct sr_sid		*sr_sid;
 	uint8_t			sr_arg;
 	struct xdp_packet	*sr_cache_pkt[256] = {};
 	unsigned int		cache_len;
@@ -804,25 +817,16 @@ static void forward_endac6_out(struct xdp_plane *plane, unsigned int port_idx,
 
 	port = &plane->ports[port_idx];
 	sr_table = &sr_cache_table[port->bound_table_idx];
-	sr_sid = &sr_table->sid;
 
 	for(i = 0; i < vec->num; i++){
 		pkt = vec->packets[i];
-
-		srv6 = (struct ipv6_sr_hdr *)pkt->layer3_ext;
-		sid = &srv6->segments[srv6->segments_left + 1];
-
-		sr_arg = sid->s6_addr[sr_sid->arg_offset];
-		sr_cache_pkt[sr_arg] = pkt;
+		sr_cache_pkt[pkt->sr_arg] = pkt;
 	}
 
 	for(i = 0; i < vec->num; i++){
 		pkt = vec->packets[i];
 
-		srv6 = (struct ipv6_sr_hdr *)pkt->layer3_ext;
-		sid = &srv6->segments[srv6->segments_left + 1];
-
-		sr_arg = sid->s6_addr[sr_sid->arg_offset];
+		sr_arg = pkt->sr_arg;
 		cache_len = pkt->current - pkt->layer3;
 
 		if(sr_cache_pkt[sr_arg] == pkt){
