@@ -103,6 +103,9 @@ struct xdp_packet {
 	void			*current;
 	void			*layer2;
 	void			*layer3;
+#ifdef SRV6_END_AC
+	void			*layer3_ext;
+#endif
 	unsigned int		flag;
 	uint8_t			nexthdr;
 };
