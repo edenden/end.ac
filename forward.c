@@ -573,6 +573,7 @@ static void forward_endac4_in(struct xdp_plane *plane, unsigned int port_idx,
 	struct xdp_vec_ref vec_ip6;
 	struct ethhdr *eth;
 	struct iphdr *ip;
+	struct ip6_hdr *ip6;
 	uint32_t check;
 	struct sr_cache_table	*sr_table;
 	struct sr_cache		*sr_cache;
@@ -634,6 +635,10 @@ static void forward_endac4_in(struct xdp_plane *plane, unsigned int port_idx,
 
 		ip->check = xdp_ip_check_inc(ip->check, ip->tos, 0);
 		ip->tos = 0;
+
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		ip6->ip6_plen = htons((cache_len - sizeof(struct ip6_hdr))
+			+ sizeof(struct iphdr) + xdp_pkt_rest(pkt));
 
 		eth = (struct ethhdr *)pkt->layer2;
 		/* XXX:
@@ -720,6 +725,10 @@ static void forward_endac6_in(struct xdp_plane *plane, unsigned int port_idx,
 		pkt->current = ip6 + 1;
 
 		((uint8_t *)&ip6->ip6_flow)[3] = 0;
+
+		ip6 = (struct ip6_hdr *)pkt->layer3;
+		ip6->ip6_plen = htons((cache_len - sizeof(struct ip6_hdr))
+			+ sizeof(struct ip6_hdr) + xdp_pkt_rest(pkt));
 
 		eth = (struct ethhdr *)pkt->layer2;
 		/* XXX:
