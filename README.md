@@ -1,8 +1,8 @@
 # end.ac
 SRv6 function of multi-tenant proxy by SRH caching over AF_XDP
 
-<img src="img/linapen.png" width="320">
-Thanks to pero-san
+<img src="img/linapen.png" width="480">
+*Thanks to pero-san*
 
 ## Usage
 See -h option for latest information.
