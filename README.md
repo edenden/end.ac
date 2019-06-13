@@ -1,7 +1,7 @@
 # end.ac
 SRv6 function of multi-tenant proxy by SRH caching over AF_XDP
 
-![XDP penguin](img/linapen.png "XDP penguin")
+<img src="img/linapen.png" width="320">
 Thanks to pero-san
 
 ## Usage
