@@ -1,8 +1,8 @@
 # end.ac
 SRv6 function of multi-tenant proxy by SRH caching over AF_XDP
 
-<img src="img/linapen.png" width="480">
-Thanks to pero-san
+![linapen](https://user-images.githubusercontent.com/1351466/59582678-fad24080-9113-11e9-8e0d-ef088fcdd2bc.png)
+(c) pero-san. This image is not MIT license.
 
 ## Usage
 See -h option for latest information.
